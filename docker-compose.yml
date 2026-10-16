@@ -1,10 +1,19 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # 本机 SELinux 为 Enforcing，pgdata 卷的标签是 container_share_t，
+    # 普通容器（container_t）写不进去，会导致 PG 起不来（EPERM）；
+    # 特权模式用 spc_t 绕过标签检查。想彻底去掉这行见 README/备注。
+    privileged: true
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-artex}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-artex}
+    ports:
+      # 发布到宿主机，方便在 Windows 上用 GUI 工具连库。
+      # VMnet8 是隔离的 NAT 网段，此端口只对宿主机和同 vnet 的虚拟机可见，
+      # 局域网/公网进不来。想更保守可改成 "127.0.0.1:5432:5432" 并配 SSH 隧道。
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,7 +24,7 @@ services:
     restart: unless-stopped
 
   artex:
-    image: autumn27/artex:${ARTEX_TAG:-latest}
+    image: ghcr.io/hyy19sec/artex:${ARTEX_TAG:-latest}
     depends_on:
       postgres:
         condition: service_healthy
