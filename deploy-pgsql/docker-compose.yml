@@ -1,0 +1,42 @@
+# 仅数据库：PostgreSQL（供 Windows 上的 artex.exe 远程连接）
+#
+# 用法（在虚拟机里，与本文件同目录）：
+#   docker-compose up -d          # 起库（新版 docker 用 `docker compose up -d`）
+#   docker-compose ps             # 看状态（期望 Up (healthy)）
+#   docker-compose logs -f postgres
+#   docker-compose down           # 停（数据保留在命名卷 artex-pgdata 里）
+#
+# 连接信息（填到 Windows 侧 config.json）：
+#   host=<虚拟机IP>  port=5432  user=artex  password=<.env 里的>  dbname=artex  sslmode=disable
+#
+# 用【命名卷】而非 bind mount：Docker 会自动把卷的属主/权限配成容器内 postgres 用户。
+#
+# ⚠️ security_opt：CentOS 7（内核 3.10）等老系统上，Docker 默认 seccomp 会让 postgres
+# 写文件报 "could not write to file postmaster.pid: Operation not permitted"。
+# 放开 seccomp 即可（已用 `docker run --privileged` 验证过根因）。若放开后仍失败，
+# 把 `security_opt` 换成 `privileged: true`。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: artex-pg
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-artex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-artex}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    security_opt:
+      - seccomp:unconfined
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-artex} -d ${POSTGRES_DB:-artex}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: artex-pgdata
