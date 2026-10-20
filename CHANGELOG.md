@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-10-20
+
+### 资产同步（lddscan xlsx）
+
+#### 新增的功能
+
+- **lddscan xlsx 导入资产**：在「资产同步 → lddscan 导入」上传 lddscan 导出的多 sheet xlsx，自动解析 `Target`、`DNS Info`、`Http Data`（兼容 `Url Dedup` / `Hunter` / `Fofa`）三个 sheet，写入公司、根域名、子域名、IP 和 HTTP 服务资产。
+  - `Target`：`target` → 根域名；可选 `company` 列 → 公司 + 公司资产范围（domain scope）。
+  - `DNS Info`：`domain` + `a` / `cname` → 子域名及 A/CNAME 记录，并联动 IP 资产。
+  - `Http Data`：`url` / `title` / `ip` / `status_code` / `length` / `favhash` / `finger` → HTTP 服务的 URL、标题、状态码、响应长度、favicon、指纹。
+  - 单文件上限 64MB、单 sheet 50 万行，导入过程支持取消；重复 URL 按 `assets.url` 去重合并。
+- **`crawl_flag` 映射为 `has_js`**：`Http Data` 中 `crawl_flag=1/True` 表示页面抓到了 JS 引用（`asset_refs` 非空），导入时写入新增的 `assets.has_js` 布尔列；`0/False` 写 `false`，失败行/空值保持 `NULL`。
+  - 新增部分索引 `idx_av2_has_js`，只覆盖 `type='service' AND service_type='http'`。
+  - `list_assets` DSL 支持 `has_js==true` / `has_js==false` / `has_js==1`。
+  - planner 默认提示词增加「有 JS 的页面优先测」，建议用 `list_assets("has_js==true AND status_code==200", type="service")` 拉取。
+  - 存量数据无需重新导入：重新上传同一 xlsx 会走 `ON CONFLICT` 回填，或从 `crawl_flag` 生成 `UPDATE` 脚本回填。
+
+### 资产覆盖度
+
+#### 新增的功能
+
+- **总览新增「JS 资产覆盖度」**：任务详情 → 总览 → 资产测试覆盖度卡片中，新增 `has_js=true` 的 HTTP 服务覆盖度（已测 / 总数 / 百分比），口径与总覆盖度一致（任务 scope 作为分母，fact 锚点视为已测）。
+- 覆盖度 API 新增 `has_js_total` / `has_js_tested` / `has_js_pct`；`graph_overview` 同步暴露这三个字段给 planner。
+
+### 部署
+
+#### 变更
+
+- **docker-compose 默认使用南京大学 GHCR 镜像**：`ghcr.io/hyy19sec/artex` → `ghcr.nju.edu.cn/hyy19sec/artex`，解决国内直连 GHCR 拉取 1.7GB 镜像极慢的问题。
+- `ARTEX_TAG` 可固定镜像版本（如 `v0.3.17`），不设置时回退到 `latest`。
+
 ## [0.3.15] - 2026-10-07
 
 ### 拦截
