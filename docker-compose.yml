@@ -24,7 +24,9 @@ services:
     restart: unless-stopped
 
   artex:
-    image: ghcr.io/hyy19sec/artex:${ARTEX_TAG:-latest}
+    # 国内直连 ghcr.io 拉取很慢，默认走南京大学 GHCR 镜像；可用 ARTEX_TAG 固定版本。
+    # 想切回官方源：把下面改成 ghcr.io/hyy19sec/artex:${ARTEX_TAG:-latest}
+    image: ghcr.nju.edu.cn/hyy19sec/artex:${ARTEX_TAG:-latest}
     depends_on:
       postgres:
         condition: service_healthy
