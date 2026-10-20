@@ -24,7 +24,8 @@ context_tasks AS (
 const contextCoverageCTE = directTaskContextCTE + `,
 target AS (
   SELECT DISTINCT a.id, a.type,
-         COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
+         COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
+         a.has_js, a.service_type
   FROM assets a
   JOIN task_scope ts ON (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -39,7 +40,8 @@ target AS (
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
 	UNION
 	SELECT a.id, a.type,
-	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
+	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
+	       a.has_js, a.service_type
 	FROM assets a
 	JOIN exploration_anchors ea ON ea.asset_id=a.id
 	JOIN exploration_nodes en ON en.id=ea.node_id
@@ -126,7 +128,9 @@ func (s *AssetStore) TaskCoverageWithSources(taskID int64) (*Coverage, error) {
 SELECT count(*) FROM task_scope ts JOIN context_tasks ctx ON ctx.task_id=ts.task_id`, taskID).Scan(&cov.ScopeRows)
 	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
 SELECT target.type, count(*) AS total,
-       count(*) FILTER (WHERE target.id IN (SELECT asset_id FROM tested)) AS tested
+       count(*) FILTER (WHERE target.id IN (SELECT asset_id FROM tested)) AS tested,
+       count(*) FILTER (WHERE target.type='service' AND target.service_type='http' AND target.has_js IS TRUE) AS has_js_total,
+       count(*) FILTER (WHERE target.type='service' AND target.service_type='http' AND target.has_js IS TRUE AND target.id IN (SELECT asset_id FROM tested)) AS has_js_tested
 FROM target GROUP BY target.type ORDER BY target.type`, taskID)
 	if err != nil {
 		return nil, err
@@ -134,12 +138,15 @@ FROM target GROUP BY target.type ORDER BY target.type`, taskID)
 	defer rows.Close()
 	for rows.Next() {
 		var byType CoverageByType
-		if err := rows.Scan(&byType.Type, &byType.Total, &byType.Tested); err != nil {
+		var jsTotal, jsTested int
+		if err := rows.Scan(&byType.Type, &byType.Total, &byType.Tested, &jsTotal, &jsTested); err != nil {
 			return nil, err
 		}
 		cov.ByType = append(cov.ByType, byType)
 		cov.Denominator += byType.Total
 		cov.Tested += byType.Tested
+		cov.HasJSTotal += jsTotal
+		cov.HasJSTested += jsTested
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -147,6 +154,10 @@ FROM target GROUP BY target.type ORDER BY target.type`, taskID)
 	if cov.Denominator > 0 {
 		pct := float64(cov.Tested) / float64(cov.Denominator)
 		cov.Pct = &pct
+	}
+	if cov.HasJSTotal > 0 {
+		pct := float64(cov.HasJSTested) / float64(cov.HasJSTotal)
+		cov.HasJSPct = &pct
 	}
 	return cov, nil
 }

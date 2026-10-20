@@ -374,6 +374,9 @@ export const api = {
       denominator: number;
       tested: number;
       pct: number | null;
+      has_js_total: number;
+      has_js_tested: number;
+      has_js_pct: number | null;
       by_type: { type: string; total: number; tested: number }[];
     }>(`/tasks/${id}/coverage`),
   // 资产覆盖图：范围内全部资产 + 连接用的根域名/公司节点，含 tested/in_scope。

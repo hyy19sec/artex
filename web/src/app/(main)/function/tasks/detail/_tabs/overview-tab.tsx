@@ -114,6 +114,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     denominator: number;
     tested: number;
     pct: number | null;
+    has_js_total: number;
+    has_js_tested: number;
+    has_js_pct: number | null;
     by_type: { type: string; total: number; tested: number }[];
   } | null>(null);
   // 正在重跑的意图 id（含 "__all__" 表示批量），用于禁用按钮 + 转圈。
@@ -729,6 +732,27 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                     </span>
                   </span>
                 ))}
+              </div>
+            )}
+            {coverage.has_js_total > 0 && (
+              <div className="flex flex-col gap-1 border-t pt-3">
+                <div className="flex items-baseline justify-between gap-3 text-sm">
+                  <span className="text-muted-foreground">
+                    JS 资产覆盖度
+                    <span className="ml-1 text-xs">（has_js=true，通常有前端接口）</span>
+                  </span>
+                  <span className="tabular-nums font-medium">
+                    {coverage.has_js_pct != null
+                      ? Math.round(coverage.has_js_pct * 100) + "%"
+                      : "—"}
+                    <span className="text-muted-foreground ml-2 text-xs font-normal">
+                      已测 {coverage.has_js_tested} / {coverage.has_js_total}
+                    </span>
+                  </span>
+                </div>
+                {coverage.has_js_pct != null && (
+                  <Progress value={Math.round(coverage.has_js_pct * 100)} />
+                )}
               </div>
             )}
           </CardContent>

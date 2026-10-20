@@ -282,7 +282,12 @@ type Coverage struct {
 	Denominator int              `json:"denominator"` // 范围内资产数
 	Tested      int              `json:"tested"`      // 已测(约)
 	Pct         *float64         `json:"pct"`         // 覆盖度；分母 0 时 null
-	ByType      []CoverageByType `json:"by_type"`     // 按资产类型的 总数/已测
+	// HasJS* 是同一口径下只统计 has_js=true 的 HTTP 服务（lddscan crawl_flag=1，
+	// 页面抓到了 JS 引用）。HasJSTotal=0 表示范围内没有这类资产。
+	HasJSTotal  int              `json:"has_js_total"`
+	HasJSTested int              `json:"has_js_tested"`
+	HasJSPct    *float64         `json:"has_js_pct"`
+	ByType      []CoverageByType `json:"by_type"` // 按资产类型的 总数/已测
 }
 
 // CoverageEnabled reports whether a task has the asset-coverage feature turned on
@@ -303,7 +308,8 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 const covTargetCTE = `
 target AS (
   SELECT DISTINCT a.id, a.type,
-         COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
+         COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
+         a.has_js, a.service_type
   FROM assets a
   JOIN task_scope ts ON ts.task_id = $1 AND (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -330,7 +336,9 @@ func (s *AssetStore) TaskCoverage(taskID, expID int64) (*Coverage, error) {
 	_ = s.db.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=$1`, taskID).Scan(&cov.ScopeRows)
 	rows, err := s.db.Query(`WITH `+covTargetCTE+`
 SELECT t.type, count(*) AS total,
-       count(*) FILTER (WHERE t.id IN (SELECT asset_id FROM tested)) AS tested
+       count(*) FILTER (WHERE t.id IN (SELECT asset_id FROM tested)) AS tested,
+       count(*) FILTER (WHERE t.type='service' AND t.service_type='http' AND t.has_js IS TRUE) AS has_js_total,
+       count(*) FILTER (WHERE t.type='service' AND t.service_type='http' AND t.has_js IS TRUE AND t.id IN (SELECT asset_id FROM tested)) AS has_js_tested
 FROM target t GROUP BY t.type ORDER BY t.type`, taskID, expID)
 	if err != nil {
 		return nil, err
@@ -338,12 +346,15 @@ FROM target t GROUP BY t.type ORDER BY t.type`, taskID, expID)
 	defer rows.Close()
 	for rows.Next() {
 		var bt CoverageByType
-		if err := rows.Scan(&bt.Type, &bt.Total, &bt.Tested); err != nil {
+		var jsTotal, jsTested int
+		if err := rows.Scan(&bt.Type, &bt.Total, &bt.Tested, &jsTotal, &jsTested); err != nil {
 			return nil, err
 		}
 		cov.ByType = append(cov.ByType, bt)
 		cov.Denominator += bt.Total
 		cov.Tested += bt.Tested
+		cov.HasJSTotal += jsTotal
+		cov.HasJSTested += jsTested
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -351,6 +362,10 @@ FROM target t GROUP BY t.type ORDER BY t.type`, taskID, expID)
 	if cov.Denominator > 0 {
 		p := float64(cov.Tested) / float64(cov.Denominator)
 		cov.Pct = &p
+	}
+	if cov.HasJSTotal > 0 {
+		p := float64(cov.HasJSTested) / float64(cov.HasJSTotal)
+		cov.HasJSPct = &p
 	}
 	return cov, nil
 }

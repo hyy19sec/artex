@@ -3801,6 +3801,9 @@ export const coverage = {
   denominator: 26,
   tested: 11,
   pct: 11 / 26,
+  has_js_total: 5,
+  has_js_tested: 3,
+  has_js_pct: 3 / 5,
   by_type: [
     { type: "subdomain", total: 6, tested: 4 },
     { type: "service", total: 9, tested: 4 },
