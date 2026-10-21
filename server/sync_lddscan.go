@@ -247,9 +247,12 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 	// cert_ERROR=误报：lddscan 对 IP 主机用占位 SNI（如 www.notexist.com）探测，
 	// 证书错误被判为误报。按用户要求这类行不导入。
 	certErrCol := firstCol(cols, "cert_error")
+	// error 列用于区分"超时导致没有状态码"和"其他原因没有状态码"。
+	errCol := firstCol(cols, "error")
 
 	n := 0
 	skippedCertErr := 0
+	skippedNoStatus := 0
 	for rows.Next() {
 		if n++; n%lddscanCtxEvery == 0 {
 			if err := ctx.Err(); err != nil {
@@ -274,7 +277,15 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 			PageTitle:    cell(row, cols, titleCol),
 			Technologies: parsePyList(cell(row, cols, fingerCol)),
 		}
-		if sc := atoi(cell(row, cols, statusCol)); sc > 0 {
+		sc := atoi(cell(row, cols, statusCol))
+		if sc <= 0 {
+			// 没有状态码：只保留超时行（作为"存活但未探明"的线索）；
+			// 连接错误/DNS/证书等非超时行按用户要求跳过。
+			if !isTimeoutError(cell(row, cols, errCol)) {
+				skippedNoStatus++
+				continue
+			}
+		} else {
 			req.StatusCode = &sc
 		}
 		if cl := atoi64(cell(row, cols, lenCol)); cl > 0 {
@@ -304,7 +315,17 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 	if skippedCertErr > 0 {
 		res.warn("已跳过 cert_ERROR=误报 的 HTTP 记录: %d 条", skippedCertErr)
 	}
+	if skippedNoStatus > 0 {
+		res.warn("已跳过无状态码且非超时的 HTTP 记录: %d 条", skippedNoStatus)
+	}
 	return nil
+}
+
+// isTimeoutError reports whether lddscan's error text is a timeout. Timed-out
+// rows are kept even without a status code: the host is alive but unresponsive,
+// which is still useful as an asset/coverage signal.
+func isTimeoutError(v string) bool {
+	return strings.Contains(strings.ToLower(v), "timeout")
 }
 
 // isCertErrorMisreport reports whether lddscan marked the TLS certificate error
