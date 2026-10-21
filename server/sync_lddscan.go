@@ -244,8 +244,12 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 	// crawl_flag 原样映射为 has_js：lddscan 的 1/True 表示该页抓到了 JS 引用
 	// （asset_refs 非空），即存在前端接口、值得优先测试；0/False 表示没有。
 	crawlCol := firstCol(cols, "crawl_flag")
+	// cert_ERROR=误报：lddscan 对 IP 主机用占位 SNI（如 www.notexist.com）探测，
+	// 证书错误被判为误报。按用户要求这类行不导入。
+	certErrCol := firstCol(cols, "cert_error")
 
 	n := 0
+	skippedCertErr := 0
 	for rows.Next() {
 		if n++; n%lddscanCtxEvery == 0 {
 			if err := ctx.Err(); err != nil {
@@ -258,6 +262,10 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 		}
 		url := cell(row, cols, urlCol)
 		if url == "" {
+			continue
+		}
+		if isCertErrorMisreport(cell(row, cols, certErrCol)) {
+			skippedCertErr++
 			continue
 		}
 		req := db.UpsertHTTPServiceReq{
@@ -290,7 +298,22 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 		}
 		res.Synced["service"]++
 	}
-	return rows.Error()
+	if err := rows.Error(); err != nil {
+		return err
+	}
+	if skippedCertErr > 0 {
+		res.warn("已跳过 cert_ERROR=误报 的 HTTP 记录: %d 条", skippedCertErr)
+	}
+	return nil
+}
+
+// isCertErrorMisreport reports whether lddscan marked the TLS certificate error
+// as a probe artifact ("误报"). The row's HTTP request itself may have succeeded,
+// but these are IP:port services probed with a placeholder SNI, so the user
+// chose not to import them.
+func isCertErrorMisreport(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "误报" || v == "誤報"
 }
 
 // ---------- sheet / cell helpers ----------
