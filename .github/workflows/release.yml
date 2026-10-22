@@ -82,6 +82,36 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要历史 tag 才能算出上一版本与 Full Changelog 链接
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # 取当前 tag 对应的 `## [x.y.z]` 段落；遇到下一个 `## [` 停止。
+          awk -v ver="$version" '
+            index($0, "## [" ver "]") == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          # 去掉段首空行，避免 Release 正文顶部留白。
+          sed -i '/./,$!d' release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "::warning::CHANGELOG.md 中没有 [$version] 段落，回退到提交记录"
+            prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+            if [ -n "$prev" ]; then
+              git log --no-merges --pretty=format:'- %s' "$prev..$GITHUB_REF_NAME" > release_notes.md
+            else
+              git log -20 --no-merges --pretty=format:'- %s' > release_notes.md
+            fi
+          fi
+          # 正文末尾保留与上一版本的 compare 链接。
+          prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            printf '\n\n---\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+              "$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME" >> release_notes.md
+          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: pkg-*
@@ -95,7 +125,9 @@ jobs:
           files: |
             dist/*.zip
             dist/SHA256SUMS
-          generate_release_notes: true
+          body_path: release_notes.md
+          generate_release_notes: false
+          overwrite_files: true # 覆盖 0.3.21 这类重发时已有的同名资产
 
   # ④ 多架构镜像 → 推 GitHub Container Registry（复用 binaries 编好的 Linux
   #    二进制，镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）。
