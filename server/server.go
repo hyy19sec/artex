@@ -186,6 +186,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return t, true
 		}
+		// Frontier cap for planner add_intent. Read per call (not per task start), so
+		// changing the setting applies immediately to running tasks as well.
+		agent.MaxOpenIntents = m.MaxFrontierOpen
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
@@ -3303,6 +3306,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"global_proxy":             s.m.GlobalProxy(),           // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
 		"python_interpreter":       strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"workers":                  s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"max_frontier_open":        s.m.MaxFrontierOpen(),       // 单任务 open 意图上限；0=不限；add_intent 达限即拒绝
 		"task_concurrency_enabled": concOn,                      // 任务并发上限开关(默认关)
 		"task_concurrency_limit":   concLimit,                   // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
@@ -3375,6 +3379,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		GlobalProxy      *string `json:"global_proxy"`       // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
 		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+		MaxFrontierOpen  *int    `json:"max_frontier_open"`  // 单任务 open 意图上限(>=0)；0=不限
 		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
 		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -3449,6 +3454,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Workers != nil {
 		if err := s.m.SetWorkers(*req.Workers); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	if req.MaxFrontierOpen != nil {
+		if err := s.m.SetMaxFrontierOpen(*req.MaxFrontierOpen); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}

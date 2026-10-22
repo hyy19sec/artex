@@ -160,6 +160,19 @@ func (w WriteCounts) String() string {
 // honest breakdown instead of calling assets/findings "facts").
 func (t *ToolSet) Writes() WriteCounts { return t.writes }
 
+// MaxOpenIntents, if set, returns the per-task open-intent cap (0 = unlimited).
+// Wired by the server to the persisted setting; read per add_intent call so a
+// settings change applies immediately to running tasks. Best-effort: concurrent
+// add_intent calls can overshoot the cap by a few.
+var MaxOpenIntents func() int
+
+func maxOpenIntents() int {
+	if MaxOpenIntents == nil {
+		return 0
+	}
+	return MaxOpenIntents()
+}
+
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 	return &ToolSet{ts: ts, worker: worker}
 }
@@ -436,6 +449,20 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		out["frontier_open"] = fo
 	} else {
 		out["frontier_open"] = len(fr)
+	}
+	// frontier_limit / frontier_remaining：仅在配置了上限时出现，planner 据此在
+	// 积压时停止新增（add_intent 本身也会硬拒绝）。
+	if limit := maxOpenIntents(); limit > 0 {
+		out["frontier_limit"] = limit
+		open := len(fr)
+		if fo, ok := out["frontier_open"].(int); ok {
+			open = fo
+		}
+		remaining := limit - open
+		if remaining < 0 {
+			remaining = 0
+		}
+		out["frontier_remaining"] = remaining
 	}
 	// findings (confirmed vulns) and facts (worker exploration results) are
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
@@ -1116,7 +1143,24 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			createdAny := false
+			// Frontier cap: allow only the remaining slots; excess batch items are
+			// reported individually so a valid batch still makes progress. A limit
+			// of 0 (or a failed count) means unlimited / fail open.
+			limit := maxOpenIntents()
+			remaining := -1
+			if limit > 0 && t.ts != nil {
+				if open, err := t.ts.CountOpenIntents(); err == nil {
+					remaining = limit - open
+					if remaining < 0 {
+						remaining = 0
+					}
+				}
+			}
 			for i, it := range items {
+				if remaining >= 0 && i >= remaining {
+					errs[strconv.Itoa(i)] = fmt.Sprintf("frontier 已达上限(%d 条 open)：本条未创建；请先执行/关闭已有意图，或在系统设置中调大上限", limit)
+					continue
+				}
 				id, err := t.addOneIntent(it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()

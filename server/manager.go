@@ -261,7 +261,10 @@ const (
 	// only routes the search backend) and the per-profile LLM proxy.
 	settingGlobalProxy = "global_proxy"
 	settingWorkers     = "workers"
-	settingLLMRecord   = "llm_record"
+	// settingMaxFrontierOpen caps how many open intents a task's frontier may hold.
+	// 0 = unlimited. Enforced by the agent add_intent tool (best-effort per call).
+	settingMaxFrontierOpen = "max_frontier_open"
+	settingLLMRecord       = "llm_record"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式
@@ -334,6 +337,28 @@ func (m *Manager) SetWorkers(n int) error {
 		return fmt.Errorf("workers 必须 >0")
 	}
 	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
+}
+
+// MaxFrontierOpen returns the open-intent cap for a task's frontier. 0 = unlimited.
+// Read per add_intent call, so a settings change applies immediately to running tasks.
+func (m *Manager) MaxFrontierOpen() int {
+	v, ok, err := m.pg.GetSetting(settingMaxFrontierOpen)
+	if err != nil || !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// SetMaxFrontierOpen persists the open-intent cap. 0 disables the cap.
+func (m *Manager) SetMaxFrontierOpen(n int) error {
+	if n < 0 {
+		return fmt.Errorf("frontier 上限不能为负数")
+	}
+	return m.pg.SetSetting(settingMaxFrontierOpen, strconv.Itoa(n))
 }
 
 // Enrich returns the asset auto-completion engine (may be nil if init failed).

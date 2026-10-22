@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-10-22
+
+### 新增的功能
+
+- **Frontier 上限设置**：系统设置「工作并发 · Work Agent 数」新增单任务 open 意图上限（0 = 不限，立即生效）。达到上限后 planner 的 `add_intent` 会拒绝超出的新增并返回可恢复错误；`graph_overview` 同时暴露 `frontier_limit` / `frontier_remaining`，便于 planner 在积压时先执行、合并或关闭已有意图。
+
+### 变更
+
+- **「版本与更新」的发布源改为本仓库**：系统设置中的检查更新/一键更新现在从 `hyy19sec/artex` 的 GitHub Releases 获取版本与资产，不再指向原上游仓库。
+
 ## [0.3.21] - 2026-10-22
 
 ### 新增的功能

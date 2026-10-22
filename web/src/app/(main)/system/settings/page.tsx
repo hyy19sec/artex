@@ -38,6 +38,8 @@ export default function SystemSettingsPage() {
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
+  const [maxFrontier, setMaxFrontier] = React.useState("0");
+  const [savingMaxFrontier, setSavingMaxFrontier] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
   const [injectWorker, setInjectWorker] = React.useState(true);
@@ -57,6 +59,7 @@ export default function SystemSettingsPage() {
     setGlobalProxyInput(s.global_proxy ?? "");
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
+    setMaxFrontier(String(s.max_frontier_open ?? 0));
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
@@ -77,6 +80,23 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingWorkers(false));
+  };
+
+  const saveMaxFrontier = () => {
+    const n = Number(maxFrontier);
+    if (!Number.isInteger(n) || n < 0) {
+      toast.error("Frontier 上限必须是不小于 0 的整数");
+      return;
+    }
+    setSavingMaxFrontier(true);
+    api
+      .setSettings({ max_frontier_open: n })
+      .then((s) => {
+        apply(s);
+        toast.success(n === 0 ? "已关闭 Frontier 上限" : `已保存 Frontier 上限：${n} 条 open 意图`);
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingMaxFrontier(false));
   };
 
   const savePython = () => {
@@ -657,6 +677,9 @@ export default function SystemSettingsPage() {
             <CardDescription>
               每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后
               <b>对之后启动的任务生效</b>，正在运行的任务不受影响。
+              <br />
+              Frontier 上限限制单个任务同时待领（open）的意图数；0 = 不限，达到后 planner 的
+              add_intent 会被拒绝。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -673,6 +696,26 @@ export default function SystemSettingsPage() {
               <Button onClick={saveWorkers} disabled={!loaded || savingWorkers}>
                 保存
               </Button>
+            </div>
+            <div className="border-t pt-3">
+              <div className="mb-1 text-xs text-muted-foreground">Frontier 上限（open 意图数，0 = 不限）</div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  className="w-32 font-mono text-sm"
+                  placeholder="0"
+                  value={maxFrontier}
+                  disabled={!loaded || savingMaxFrontier}
+                  onChange={(e) => setMaxFrontier(e.target.value)}
+                />
+                <Button onClick={saveMaxFrontier} disabled={!loaded || savingMaxFrontier}>
+                  保存
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                达到上限后 planner 不再新增意图（立即生效）；需先执行、合并或关闭已有意图。
+              </p>
             </div>
           </CardContent>
         </Card>
