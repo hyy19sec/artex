@@ -4,11 +4,12 @@
 
 ## [Unreleased]
 
-## [0.3.22] - 2026-10-22
+## [0.3.22] - 2026-10-23
 
 ### 新增的功能
 
 - **Frontier 上限设置**：系统设置「工作并发 · Work Agent 数」新增单任务 open 意图上限（0 = 不限，立即生效）。达到上限后 planner 的 `add_intent` 会拒绝超出的新增并返回可恢复错误；`graph_overview` 同时暴露 `frontier_limit` / `frontier_remaining`，便于 planner 在积压时先执行、合并或关闭已有意图。
+- **会话页意图状态统计**：任务详情 → 会话页在「任务总计」下方显示当前任务的意图状态计数（待领 / 运行 / 完成 / 超时 / 出错 / 停止 / 删除 / 暂停），数字使用与 token 统计一致的徽章样式，随 5 秒轮询刷新；后端 `/api/exploration/tokens` 新增 `intent_states` 聚合字段。
 
 ### 变更
 

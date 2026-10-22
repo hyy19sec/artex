@@ -223,6 +223,23 @@ const TokenMetrics = React.forwardRef<
 });
 TokenMetrics.displayName = "TokenMetrics";
 
+// 两行固定分组：第一行主流程，第二行异常/终止；避免侧栏宽度变化时随机换行。
+const INTENT_STATE_ROWS = [
+  ["open", "running", "done", "exhausted"],
+  ["blocked", "stopped", "deleted", "paused"],
+] as const;
+
+const INTENT_STATE_SHORT: Record<string, string> = {
+  open: "待领",
+  running: "运行",
+  done: "完成",
+  exhausted: "超时",
+  blocked: "出错",
+  stopped: "停止",
+  deleted: "删除",
+  paused: "暂停",
+};
+
 // fmtDuration renders an elapsed milliseconds span compactly (90s → 1m30s).
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -636,6 +653,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const [sseLive, setSseLive] = React.useState(false);
   // Whole-task token total (all agents), polled from the backend aggregate.
   const [taskTokens, setTaskTokens] = React.useState<TokenTotal | null>(null);
+  const [intentStates, setIntentStates] = React.useState<Record<string, number>>({});
   const [sessionTokens, setSessionTokens] = React.useState<Record<string, SessionTokenUsage>>({});
   const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
   // Pending intercept requests for this task — used to show warning icons on sessions.
@@ -788,6 +806,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .then((r) => {
           if (!alive) return;
           setTaskTokens(r.total);
+          setIntentStates(r.intent_states ?? {});
           setSessionTokens(Object.fromEntries(r.sessions.map((item) => [item.session, item])));
         })
         .catch(() => {
@@ -884,6 +903,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     setOlderIntentsHasMore(false);
     setHasLoadedOlderIntentsPage(false);
     setTaskTokens(null);
+    setIntentStates({});
     setSessionTokens({});
     setLLMResolutions(null);
     setSseLive(false);
@@ -1624,24 +1644,41 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               )}
             </div>
             {taskTokens && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                    <span>任务总计</span>
-                    <span>·</span>
-                    <TokenMetrics
-                      input={taskTokens.input_tokens}
-                      cache={taskTokens.cache_read_tokens}
-                      output={taskTokens.output_tokens}
-                    />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>
-                  输入 {taskTokens.input_tokens.toLocaleString()} · 输出 {taskTokens.output_tokens.toLocaleString()} ·
-                  缓存读取 {taskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
-                  {taskTokens.cache_write_tokens.toLocaleString()}
-                </TooltipContent>
-              </Tooltip>
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      <span>任务总计</span>
+                      <span>·</span>
+                      <TokenMetrics
+                        input={taskTokens.input_tokens}
+                        cache={taskTokens.cache_read_tokens}
+                        output={taskTokens.output_tokens}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    输入 {taskTokens.input_tokens.toLocaleString()} · 输出 {taskTokens.output_tokens.toLocaleString()} ·
+                    缓存读取 {taskTokens.cache_read_tokens.toLocaleString()} · 缓存写入{" "}
+                    {taskTokens.cache_write_tokens.toLocaleString()}
+                  </TooltipContent>
+                </Tooltip>
+                <div className="mt-0.5 flex flex-col items-center text-xs leading-tight text-muted-foreground">
+                  {INTENT_STATE_ROWS.map((row, rowIndex) => (
+                    <div key={rowIndex} className="flex items-center justify-center gap-1 whitespace-nowrap">
+                      <span className={rowIndex === 0 ? undefined : "invisible"}>意图</span>
+                      {row.map((state) => (
+                        <React.Fragment key={state}>
+                          <span>{INTENT_STATE_SHORT[state]}</span>
+                          <Badge variant="secondary" className="h-5 px-1.5 font-mono tabular-nums">
+                            {intentStates[state] ?? 0}
+                          </Badge>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
           <ScrollArea

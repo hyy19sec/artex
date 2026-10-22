@@ -2149,10 +2149,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (path === "/exploration/tokens") {
     const selectedTask = task ? mockTasks.find((item) => item.id === task) : undefined;
+    const intentStates = (D.explorationGraph.nodes ?? [])
+      .filter((node) => node.type === "intent")
+      .reduce<Record<string, number>>((acc, node) => {
+        acc[node.state] = (acc[node.state] ?? 0) + 1;
+        return acc;
+      }, {});
     return {
       workers: D.tokenWorkers,
       sessions: D.tokenSessions,
       total: selectedTask?.tokens ?? D.tokenTotal,
+      intent_states: intentStates,
     };
   }
   if (path === "/exploration/graph") return D.explorationGraph;

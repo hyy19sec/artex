@@ -2817,9 +2817,10 @@ func (s *Server) tokenStats(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeJSON(w, 200, map[string]any{
-			"workers":  []db.TokenUsage{},
-			"sessions": []db.SessionTokenUsage{},
-			"total":    tokenTotalDTO(db.TokenUsage{}),
+			"workers":       []db.TokenUsage{},
+			"sessions":      []db.SessionTokenUsage{},
+			"total":         tokenTotalDTO(db.TokenUsage{}),
+			"intent_states": map[string]int{},
 		})
 		return
 	}
@@ -2838,7 +2839,13 @@ func (s *Server) tokenStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"workers": stats, "sessions": sessions, "total": tokenTotalDTO(total)})
+	// Intent state counts power the compact breakdown under the token total. Best-effort:
+	// a failure here must not break the token panel.
+	states, err := t.Store.IntentStateCounts()
+	if err != nil || states == nil {
+		states = map[string]int{}
+	}
+	writeJSON(w, 200, map[string]any{"workers": stats, "sessions": sessions, "total": tokenTotalDTO(total), "intent_states": states})
 }
 
 // tokenDailyStats returns global token consumption aggregated by calendar day

@@ -688,12 +688,16 @@ export const api = {
     post<FindingDeepenResponse>(`/exploration/findings/${id}/deepen`, { description }),
   intents: (task?: string) => get<TaskNode[]>(`/exploration/intents${tq(task)}`).then(arr),
   tokenStats: (task?: string) =>
-    get<{ workers: TokenUsage[]; sessions: SessionTokenUsage[]; total: TokenTotal }>(
-      `/exploration/tokens${tq(task)}`,
-    ).then((r) => ({
+    get<{
+      workers: TokenUsage[];
+      sessions: SessionTokenUsage[];
+      total: TokenTotal;
+      intent_states?: Record<string, number>;
+    }>(`/exploration/tokens${tq(task)}`).then((r) => ({
       workers: arr(r.workers),
       sessions: arr(r.sessions),
       total: r.total,
+      intent_states: r.intent_states ?? {},
     })),
   tokenDaily: (days = 30) => get<DailyTokenBucket[]>(`/tokens/daily?days=${days}`).then(arr),
   conversationTokens: () =>
@@ -828,8 +832,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;

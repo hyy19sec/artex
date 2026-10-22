@@ -1180,6 +1180,26 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id
 	return n == 1, nil
 }
 
+// IntentStateCounts returns intent counts grouped by state for this exploration.
+func (s *ExplorationStore) IntentStateCounts() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT state, count(*) FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' GROUP BY state`, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var state string
+		var n int
+		if err := rows.Scan(&state, &n); err != nil {
+			return nil, err
+		}
+		out[state] = n
+	}
+	return out, rows.Err()
+}
+
 // Stats returns node counts grouped by kind (for dashboard).
 func (s *ExplorationStore) Stats() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT kind, count(*) FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind`, s.expID)
