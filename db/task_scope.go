@@ -264,12 +264,17 @@ type CoverageAsset struct {
 	ID    int64  `json:"id"`
 	Type  string `json:"type"`
 	Label string `json:"label"`
-	// HasJS is meaningful for service assets: true = the page was crawled with
-	// JS references (frontend/API surface likely); false/null = not crawled,
-	// not an HTTP service, or unknown.
-	HasJS *bool `json:"has_js"`
-	// ContentLength is the HTTP response length when known (service assets).
-	ContentLength *int64 `json:"content_length"`
+	// HasJS is meaningful for HTTP(S) service assets: true = the page was crawled
+	// with JS references (frontend/API surface likely); false = not crawled.
+	// The field is omitted unless the caller asked for type=service and the asset
+	// URL is http/https.
+	HasJS *bool `json:"has_js,omitempty"`
+	// ContentLength is the HTTP response length; same eligibility as HasJS.
+	ContentLength *int64 `json:"content_length,omitempty"`
+	// PageTitle is the HTTP page title; same eligibility as HasJS.
+	PageTitle *string `json:"page_title,omitempty"`
+	// StatusCode is the HTTP status code; same eligibility as HasJS.
+	StatusCode *int `json:"status_code,omitempty"`
 }
 
 // CoverageByType is per-asset-type coverage: total in scope vs tested.
@@ -315,7 +320,7 @@ const covTargetCTE = `
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-         a.has_js, a.service_type, a.content_length
+         a.has_js, a.service_type, a.content_length, a.page_title, a.status_code
   FROM assets a
   JOIN task_scope ts ON ts.task_id = $1 AND (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -639,6 +644,12 @@ func (s *AssetStore) ListUntestedAssets(taskID, expID int64, typ string, limit, 
 		typeFilter = " AND t.type = $3"
 		args = append(args, typ)
 	}
+	// Only a type=service request exposes the HTTP-specific fields (and uses the
+	// has_js/content_length ordering); every other request is plain id order.
+	eligible := "FALSE"
+	if typ == "service" {
+		eligible = "(t.type='service' AND t.label ~* '^https?://')"
+	}
 	var total int
 	_ = s.db.QueryRow(`WITH `+covTargetCTE+`
 SELECT count(*) FROM target t WHERE t.id NOT IN (SELECT asset_id FROM tested)`+typeFilter, args...).Scan(&total)
@@ -646,9 +657,16 @@ SELECT count(*) FROM target t WHERE t.id NOT IN (SELECT asset_id FROM tested)`+t
 	limPos := strconv.Itoa(len(args) + 1)
 	offPos := strconv.Itoa(len(args) + 2)
 	rows, err := s.db.Query(`WITH `+covTargetCTE+`
-SELECT t.id, t.type, t.label, t.has_js, t.content_length FROM target t
+SELECT t.id, t.type, t.label,
+       CASE WHEN `+eligible+` THEN t.has_js END,
+       CASE WHEN `+eligible+` THEN t.content_length END,
+       CASE WHEN `+eligible+` THEN t.page_title END,
+       CASE WHEN `+eligible+` THEN t.status_code END
+FROM target t
 WHERE t.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY t.has_js DESC NULLS LAST, t.content_length DESC NULLS LAST, t.id
+ORDER BY CASE WHEN `+eligible+` THEN t.has_js END DESC NULLS LAST,
+         CASE WHEN `+eligible+` THEN t.content_length END DESC NULLS LAST,
+         t.id
 LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 	if err != nil {
 		return nil, total, err
@@ -659,11 +677,15 @@ LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 		var a CoverageAsset
 		var hasJS *bool
 		var contentLength *int64
-		if err := rows.Scan(&a.ID, &a.Type, &a.Label, &hasJS, &contentLength); err != nil {
+		var pageTitle *string
+		var statusCode *int
+		if err := rows.Scan(&a.ID, &a.Type, &a.Label, &hasJS, &contentLength, &pageTitle, &statusCode); err != nil {
 			return nil, total, err
 		}
 		a.HasJS = hasJS
 		a.ContentLength = contentLength
+		a.PageTitle = pageTitle
+		a.StatusCode = statusCode
 		out = append(out, a)
 	}
 	return out, total, rows.Err()

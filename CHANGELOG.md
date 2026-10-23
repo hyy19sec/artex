@@ -4,12 +4,16 @@
 
 ## [Unreleased]
 
-## [0.3.23] - 2026-10-23
+## [0.3.23] - 2026-10-24
 
 ### 变更
 
-- **`list_untested_assets` 返回 `has_js` / `content_length` 并按页面价值排序**：每条未测资产现在带 `has_js` 与 `content_length`（`has_js` 仅 service 资产有意义；true = 页面抓到 JS 引用，false/null = 未抓到/未知；非 service 资产为 null）。排序改为 **has_js=true 优先 → content_length 降序（页面越大越靠前）→ id 升序**，让 planner 在未测 backlog 中优先看到有前端接口的大页面。工具描述同步更新，已有库通过 `tool_schema_refresh_v8_list_untested_has_js` 一次性刷新。
+- **`list_untested_assets` 的 HTTP 字段仅在 `type=service` + HTTP(S) 时返回**：只有入参 `type=service` 且资产 URL 协议为 http/https 时，才返回 `has_js`、`content_length`、`page_title`、`status_code`（`has_js=true` 表示页面抓到 JS 引用、通常存在前端接口；`page_title` / `status_code` 用于识别产品与页面状态）；其他 type（包括不传 type）不返回这四个字段。此时排序为 **has_js=true 优先 → content_length 降序（页面越大越靠前）→ id**；其他情况按 id 升序。工具描述同步更新，已有库通过 `tool_schema_refresh_v10_list_untested_http_fields` 一次性刷新。
 - **系统设置页补充生效说明**：workers 只对之后启动的任务生效，暂停/恢复不会重建 worker 循环，当前任务需重启后端或新建任务；Frontier 上限保存后立即拦截新的 `add_intent`，不会删除已有 open 意图，也不会主动唤醒 planner。
+
+### 修复
+
+- **资产 DSL 的 OR 与 type/scope 过滤优先级错误**：`domain=a OR domain=b` 这类查询在追加 `AND type = ...` / `AND id IN (scope)` 时缺少外层括号，而 SQL 中 AND 优先级高于 OR，导致过滤只作用于最后一个 OR 分支 —— 指定 `type=service` 仍会返回其它资产类型，任务 scope 过滤也可能被绕过。现在整组 OR 会加外层括号，影响 `QueryDSL`、`CountDSL`、`QueryDSLInScope`（即 agent 的 `list_assets` 与管理端资产搜索）。
 
 ## [0.3.22] - 2026-10-23
 

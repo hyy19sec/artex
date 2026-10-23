@@ -489,7 +489,9 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 		"list_untested_assets",
 		"查询【本任务及直接关联任务】范围内、还没被事实锚点覆盖的资产（关联范围只读，供你自己判断要不要补测，不代替你决策）。\n"+
 			"可选按资产类型过滤：root_domain/subdomain/service/app/endpoint/ip。\n"+
-			"分页：page 从 1 起、page_size 默认 10。返回 {assets:[{id,type,label,has_js,content_length}], total, page, page_size}；has_js 对 service 资产有意义（true=页面抓到 JS 引用，false/NULL=未抓到/未知；非 service 为 null）。排序：has_js=true 优先，其次 content_length 降序（页面越大越靠前），最后按 id。仅任务上下文可用。",
+			"分页：page 从 1 起、page_size 默认 10。返回 {assets:[{id,type,label,has_js,content_length,page_title,status_code}], total, page, page_size}。\n"+
+			"**只有入参 type=service 且资产 URL 协议为 http/https 时**才返回 has_js、content_length、page_title、status_code（依次为：页面是否抓到 JS 引用、响应体长度、页面 <title>、HTTP 状态码）；其他 type（包括不传 type）不返回这四个字段。\n"+
+			"排序：type=service 时，HTTP(S) 资产中 has_js=true 优先，其次 content_length 降序（页面越大越靠前），最后按 id；非 HTTP(S) 资产按 id。其他 type 一律按 id。仅任务上下文可用。",
 		obj(map[string]any{
 			"type":      str("资产类型过滤（可选）：root_domain/subdomain/service/app/endpoint/ip"),
 			"page":      intp("页码，从 1 起（默认 1）"),

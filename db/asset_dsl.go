@@ -294,7 +294,12 @@ func (b *whereBuilder) build(node *astNode) (string, error) {
 			}
 			parts = append(parts, "("+clause+")")
 		}
-		return strings.Join(parts, " OR "), nil
+		// 整个 OR 组必须再包一层括号：QueryDSL / CountDSL / QueryDSLInScope 会在
+		// 返回的 where 后面追加 "AND type = ..." / "AND id IN (scope)"，而 SQL 中
+		// AND 优先级高于 OR。缺少这一层时，这些过滤只会约束最后一个 OR 分支，
+		// 例如 "domain=a OR domain=b" + type=service 仍会返回 b 分支的其它类型，
+		// scope 过滤同样会被绕过。
+		return "(" + strings.Join(parts, " OR ") + ")", nil
 	case "leaf":
 		return b.buildLeaf(*node.expr)
 	}

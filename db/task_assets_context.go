@@ -25,7 +25,7 @@ const contextCoverageCTE = directTaskContextCTE + `,
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-         a.has_js, a.service_type, a.content_length
+         a.has_js, a.service_type, a.content_length, a.page_title, a.status_code
   FROM assets a
   JOIN task_scope ts ON (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -41,7 +41,7 @@ target AS (
 	UNION
 	SELECT a.id, a.type,
 	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-	       a.has_js, a.service_type, a.content_length
+	       a.has_js, a.service_type, a.content_length, a.page_title, a.status_code
 	FROM assets a
 	JOIN exploration_anchors ea ON ea.asset_id=a.id
 	JOIN exploration_nodes en ON en.id=ea.node_id
@@ -177,6 +177,12 @@ func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, lim
 		typeFilter = " AND target.type = $2"
 		args = append(args, typ)
 	}
+	// Only a type=service request exposes the HTTP-specific fields (and uses the
+	// has_js/content_length ordering); every other request is plain id order.
+	eligible := "FALSE"
+	if typ == "service" {
+		eligible = "(target.type='service' AND target.label ~* '^https?://')"
+	}
 	var total int
 	if err := s.db.QueryRow(`WITH `+contextCoverageCTE+`
 SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter, args...).Scan(&total); err != nil {
@@ -186,9 +192,16 @@ SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)
 	limitPosition := strconv.Itoa(len(args) + 1)
 	offsetPosition := strconv.Itoa(len(args) + 2)
 	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
-SELECT target.id, target.type, target.label, target.has_js, target.content_length FROM target
+SELECT target.id, target.type, target.label,
+       CASE WHEN `+eligible+` THEN target.has_js END,
+       CASE WHEN `+eligible+` THEN target.content_length END,
+       CASE WHEN `+eligible+` THEN target.page_title END,
+       CASE WHEN `+eligible+` THEN target.status_code END
+FROM target
 WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY target.has_js DESC NULLS LAST, target.content_length DESC NULLS LAST, target.id
+ORDER BY CASE WHEN `+eligible+` THEN target.has_js END DESC NULLS LAST,
+         CASE WHEN `+eligible+` THEN target.content_length END DESC NULLS LAST,
+         target.id
 LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
 	if err != nil {
 		return nil, total, err
@@ -199,11 +212,15 @@ LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
 		var asset CoverageAsset
 		var hasJS *bool
 		var contentLength *int64
-		if err := rows.Scan(&asset.ID, &asset.Type, &asset.Label, &hasJS, &contentLength); err != nil {
+		var pageTitle *string
+		var statusCode *int
+		if err := rows.Scan(&asset.ID, &asset.Type, &asset.Label, &hasJS, &contentLength, &pageTitle, &statusCode); err != nil {
 			return nil, total, err
 		}
 		asset.HasJS = hasJS
 		asset.ContentLength = contentLength
+		asset.PageTitle = pageTitle
+		asset.StatusCode = statusCode
 		out = append(out, asset)
 	}
 	return out, total, rows.Err()
