@@ -264,6 +264,12 @@ type CoverageAsset struct {
 	ID    int64  `json:"id"`
 	Type  string `json:"type"`
 	Label string `json:"label"`
+	// HasJS is meaningful for service assets: true = the page was crawled with
+	// JS references (frontend/API surface likely); false/null = not crawled,
+	// not an HTTP service, or unknown.
+	HasJS *bool `json:"has_js"`
+	// ContentLength is the HTTP response length when known (service assets).
+	ContentLength *int64 `json:"content_length"`
 }
 
 // CoverageByType is per-asset-type coverage: total in scope vs tested.
@@ -277,11 +283,11 @@ type CoverageByType struct {
 // NOT a precise metric. Denominator = assets matching any active task_scope row;
 // Tested = those anchored to at least one fact node in the exploration.
 type Coverage struct {
-	Enabled     bool             `json:"enabled"`     // 资产覆盖度功能是否开启；false 时其余字段为零值
-	ScopeRows   int              `json:"scope_rows"`  // 0 → 范围未锚定
-	Denominator int              `json:"denominator"` // 范围内资产数
-	Tested      int              `json:"tested"`      // 已测(约)
-	Pct         *float64         `json:"pct"`         // 覆盖度；分母 0 时 null
+	Enabled     bool     `json:"enabled"`     // 资产覆盖度功能是否开启；false 时其余字段为零值
+	ScopeRows   int      `json:"scope_rows"`  // 0 → 范围未锚定
+	Denominator int      `json:"denominator"` // 范围内资产数
+	Tested      int      `json:"tested"`      // 已测(约)
+	Pct         *float64 `json:"pct"`         // 覆盖度；分母 0 时 null
 	// HasJS* 是同一口径下只统计 has_js=true 的 HTTP 服务（lddscan crawl_flag=1，
 	// 页面抓到了 JS 引用）。HasJSTotal=0 表示范围内没有这类资产。
 	HasJSTotal  int              `json:"has_js_total"`
@@ -309,7 +315,7 @@ const covTargetCTE = `
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-         a.has_js, a.service_type
+         a.has_js, a.service_type, a.content_length
   FROM assets a
   JOIN task_scope ts ON ts.task_id = $1 AND (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -640,9 +646,10 @@ SELECT count(*) FROM target t WHERE t.id NOT IN (SELECT asset_id FROM tested)`+t
 	limPos := strconv.Itoa(len(args) + 1)
 	offPos := strconv.Itoa(len(args) + 2)
 	rows, err := s.db.Query(`WITH `+covTargetCTE+`
-SELECT t.id, t.type, t.label FROM target t
+SELECT t.id, t.type, t.label, t.has_js, t.content_length FROM target t
 WHERE t.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY t.id LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
+ORDER BY t.has_js DESC NULLS LAST, t.content_length DESC NULLS LAST, t.id
+LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 	if err != nil {
 		return nil, total, err
 	}
@@ -650,9 +657,13 @@ ORDER BY t.id LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
 	out := []CoverageAsset{}
 	for rows.Next() {
 		var a CoverageAsset
-		if err := rows.Scan(&a.ID, &a.Type, &a.Label); err != nil {
+		var hasJS *bool
+		var contentLength *int64
+		if err := rows.Scan(&a.ID, &a.Type, &a.Label, &hasJS, &contentLength); err != nil {
 			return nil, total, err
 		}
+		a.HasJS = hasJS
+		a.ContentLength = contentLength
 		out = append(out, a)
 	}
 	return out, total, rows.Err()

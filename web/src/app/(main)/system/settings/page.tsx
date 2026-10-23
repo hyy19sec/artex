@@ -675,11 +675,13 @@ export default function SystemSettingsPage() {
               工作并发 · Work Agent 数
             </CardTitle>
             <CardDescription>
-              每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后
-              <b>对之后启动的任务生效</b>，正在运行的任务不受影响。
+              每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。
               <br />
-              Frontier 上限限制单个任务同时待领（open）的意图数；0 = 不限，达到后 planner 的
-              add_intent 会被拒绝。
+              <b>workers 生效方式</b>：只对之后启动的任务生效；正在运行的任务保持原 worker 数。
+              暂停/恢复不会重建 worker 循环——要让当前任务生效，需重启后端（或新建任务）。
+              <br />
+              <b>Frontier 上限</b>：保存后立即生效，只拦截新的 add_intent；不会删除已有 open 意图，也不会主动唤醒
+              planner。当前 open 高于上限时，下一次新增会被拒绝，直到存量降到上限以下。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -714,7 +716,8 @@ export default function SystemSettingsPage() {
                 </Button>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                达到上限后 planner 不再新增意图（立即生效）；需先执行、合并或关闭已有意图。
+                保存后立即生效：下一次 add_intent 即按新上限拦截；不会删除已有 open 意图，也不会主动触发
+                planner。当前 open 高于上限时，新增会被拒绝，需先执行、合并或关闭已有意图。
               </p>
             </div>
           </CardContent>

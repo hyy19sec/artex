@@ -25,7 +25,7 @@ const contextCoverageCTE = directTaskContextCTE + `,
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-         a.has_js, a.service_type
+         a.has_js, a.service_type, a.content_length
   FROM assets a
   JOIN task_scope ts ON (
        (ts.kind='company'     AND a.company_id = ts.company_id)
@@ -41,7 +41,7 @@ target AS (
 	UNION
 	SELECT a.id, a.type,
 	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
-	       a.has_js, a.service_type
+	       a.has_js, a.service_type, a.content_length
 	FROM assets a
 	JOIN exploration_anchors ea ON ea.asset_id=a.id
 	JOIN exploration_nodes en ON en.id=ea.node_id
@@ -186,9 +186,10 @@ SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)
 	limitPosition := strconv.Itoa(len(args) + 1)
 	offsetPosition := strconv.Itoa(len(args) + 2)
 	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
-SELECT target.id, target.type, target.label FROM target
+SELECT target.id, target.type, target.label, target.has_js, target.content_length FROM target
 WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY target.id LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
+ORDER BY target.has_js DESC NULLS LAST, target.content_length DESC NULLS LAST, target.id
+LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
 	if err != nil {
 		return nil, total, err
 	}
@@ -196,9 +197,13 @@ ORDER BY target.id LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs..
 	out := []CoverageAsset{}
 	for rows.Next() {
 		var asset CoverageAsset
-		if err := rows.Scan(&asset.ID, &asset.Type, &asset.Label); err != nil {
+		var hasJS *bool
+		var contentLength *int64
+		if err := rows.Scan(&asset.ID, &asset.Type, &asset.Label, &hasJS, &contentLength); err != nil {
 			return nil, total, err
 		}
+		asset.HasJS = hasJS
+		asset.ContentLength = contentLength
 		out = append(out, asset)
 	}
 	return out, total, rows.Err()

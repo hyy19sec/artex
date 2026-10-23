@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-10-23
+
+### 变更
+
+- **`list_untested_assets` 返回 `has_js` / `content_length` 并按页面价值排序**：每条未测资产现在带 `has_js` 与 `content_length`（`has_js` 仅 service 资产有意义；true = 页面抓到 JS 引用，false/null = 未抓到/未知；非 service 资产为 null）。排序改为 **has_js=true 优先 → content_length 降序（页面越大越靠前）→ id 升序**，让 planner 在未测 backlog 中优先看到有前端接口的大页面。工具描述同步更新，已有库通过 `tool_schema_refresh_v8_list_untested_has_js` 一次性刷新。
+- **系统设置页补充生效说明**：workers 只对之后启动的任务生效，暂停/恢复不会重建 worker 循环，当前任务需重启后端或新建任务；Frontier 上限保存后立即拦截新的 `add_intent`，不会删除已有 open 意图，也不会主动唤醒 planner。
+
 ## [0.3.22] - 2026-10-23
 
 ### 新增的功能
