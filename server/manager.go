@@ -38,7 +38,10 @@ type Task struct {
 	CreatedAt    int64  `json:"created_at"`
 	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
 	Paused       bool   `json:"paused"`
-	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	// ScheduledPause 为 true 表示这次暂停由「定时测试」窗口触发；窗口开始时只会
+	// 自动恢复这类任务，手动暂停/恢复会把它清空。
+	ScheduledPause bool `json:"scheduled_pause"`
+	Queued         bool `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
 	// their real FIFO order.
@@ -78,20 +81,21 @@ type Task struct {
 // updateLifecycle instead of reading or writing the corresponding Task fields
 // directly after the task has been published by Manager.
 type taskLifecycleState struct {
-	Name          string
-	PinnedAt      int64
-	Status        string
-	Paused        bool
-	Queued        bool
-	QueuedAt      int64
-	QueueMode     string
-	CompletedAt   int64
-	FirstRunAt    int64
-	DeadlineAt    int64
-	SourceTaskIDs []int64
-	CompanyIDs    []int64
-	CategoryID    *int64
-	CategoryName  string
+	Name           string
+	PinnedAt       int64
+	Status         string
+	Paused         bool
+	ScheduledPause bool
+	Queued         bool
+	QueuedAt       int64
+	QueueMode      string
+	CompletedAt    int64
+	FirstRunAt     int64
+	DeadlineAt     int64
+	SourceTaskIDs  []int64
+	CompanyIDs     []int64
+	CategoryID     *int64
+	CategoryName   string
 }
 
 func (t *Task) lifecycleSnapshot() taskLifecycleState {
@@ -105,20 +109,21 @@ func (t *Task) lifecycleSnapshot() taskLifecycleState {
 
 func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 	return taskLifecycleState{
-		Name:          t.Name,
-		PinnedAt:      t.PinnedAt,
-		Status:        t.Status,
-		Paused:        t.Paused,
-		Queued:        t.Queued,
-		QueuedAt:      t.QueuedAt,
-		QueueMode:     t.QueueMode,
-		CompletedAt:   t.CompletedAt,
-		FirstRunAt:    t.FirstRunAt,
-		DeadlineAt:    t.DeadlineAt,
-		SourceTaskIDs: append([]int64(nil), t.SourceTaskIDs...),
-		CompanyIDs:    append([]int64(nil), t.CompanyIDs...),
-		CategoryID:    cloneInt64Ptr(t.CategoryID),
-		CategoryName:  t.CategoryName,
+		Name:           t.Name,
+		PinnedAt:       t.PinnedAt,
+		Status:         t.Status,
+		Paused:         t.Paused,
+		ScheduledPause: t.ScheduledPause,
+		Queued:         t.Queued,
+		QueuedAt:       t.QueuedAt,
+		QueueMode:      t.QueueMode,
+		CompletedAt:    t.CompletedAt,
+		FirstRunAt:     t.FirstRunAt,
+		DeadlineAt:     t.DeadlineAt,
+		SourceTaskIDs:  append([]int64(nil), t.SourceTaskIDs...),
+		CompanyIDs:     append([]int64(nil), t.CompanyIDs...),
+		CategoryID:     cloneInt64Ptr(t.CategoryID),
+		CategoryName:   t.CategoryName,
 	}
 }
 
@@ -133,6 +138,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.PinnedAt = state.PinnedAt
 	t.Status = state.Status
 	t.Paused = state.Paused
+	t.ScheduledPause = state.ScheduledPause
 	t.Queued = state.Queued
 	t.QueuedAt = state.QueuedAt
 	t.QueueMode = state.QueueMode
@@ -859,7 +865,8 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		Name:       pt.Name,
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
 		PinnedAt:    unixOrZero(pt.PinnedAt),
-		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
+		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused,
+		ScheduledPause: pt.ScheduledPause, Queued: pt.Queued,
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
 		CompletedAt: unixOrZero(pt.CompletedAt), Status: pt.Status, ParentRef: pt.ParentRef,
 		LLMProfileID:  pt.LLMProfileID,
@@ -1157,6 +1164,7 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = paused
+			state.ScheduledPause = false
 		})
 	}
 	m.mu.Unlock()
@@ -1195,6 +1203,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	        ELSE NULL
 	    END,
 	    paused=false,
+	    scheduled_pause=false,
 	    queued=$3,
 	    queued_at=CASE
 	        WHEN NOT $3 THEN NULL
@@ -1229,6 +1238,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Status = status
 			state.Paused = false
+			state.ScheduledPause = false
 			state.Queued = queued
 			state.QueueMode = committedMode
 			state.QueuedAt = 0
@@ -1258,6 +1268,13 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 // bootstrap task still performs goal decomposition, but the next enqueue receives
 // a new queued_at timestamp and therefore moves to the FIFO tail.
 func (m *Manager) ApplyTaskPause(id string) error {
+	return m.ApplyTaskPauseWithOrigin(id, false)
+}
+
+// ApplyTaskPauseWithOrigin is ApplyTaskPause plus the pause origin: scheduled
+// marks the pause as coming from the automatic testing-window schedule so the
+// window-start pass may resume it, while a user pause must never be auto-resumed.
+func (m *Manager) ApplyTaskPauseWithOrigin(id string, scheduled bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
@@ -1266,10 +1283,10 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	}
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL
+		SET paused=true, scheduled_pause=$2, queued=false, queued_at=NULL
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
-		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
+		RETURNING COALESCE(queue_mode,'')`, n, scheduled).Scan(&mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for pause", id)
 	}
@@ -1280,6 +1297,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = true
+			state.ScheduledPause = scheduled
 			state.Queued = false
 			state.QueuedAt = 0
 			state.QueueMode = mode

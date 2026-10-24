@@ -94,11 +94,18 @@ export function RetestsTab({ taskId }: { taskId: string }) {
                 <Button
                   variant={finding.id === selectedId ? "secondary" : "ghost"}
                   className="h-auto w-full shrink-0 flex-col items-start gap-2 whitespace-normal py-3 text-left"
-                  aria-label={`选择漏洞：${findingLabel(finding)}`}
+                  aria-label={`选择漏洞${finding.finding_id ? ` #${finding.finding_id}` : ""}：${findingLabel(finding)}`}
                   aria-pressed={finding.id === selectedId}
                   onClick={() => setSelectedId(finding.id)}
                 >
-                  <span className="line-clamp-2 break-words">{findingLabel(finding)}</span>
+                  <span className="flex w-full min-w-0 items-center gap-1.5">
+                    {finding.finding_id && (
+                      <code className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        #{finding.finding_id}
+                      </code>
+                    )}
+                    <span className="line-clamp-2 min-w-0 break-words">{findingLabel(finding)}</span>
+                  </span>
                   <span className="flex flex-wrap items-center gap-2">
                     <StatusBadge domain="severity" value={finding.severity} dot />
                     <StatusBadge domain="finding" value={finding.status} dot />
@@ -145,7 +152,14 @@ export function RetestsTab({ taskId }: { taskId: string }) {
           <div className="flex min-w-0 flex-col gap-4">
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-start justify-between gap-2">
-                <h2 className="min-w-0 flex-1 break-words font-medium">{findingLabel(selected)}</h2>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <h2 className="min-w-0 break-words font-medium">{findingLabel(selected)}</h2>
+                  {selected.finding_id && (
+                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                      #{selected.finding_id}
+                    </code>
+                  )}
+                </div>
                 <Button asChild variant="ghost" size="sm">
                   <Link href={`/function/findings/detail?id=${selected.finding_id || selected.id}`}>
                     漏洞详情 <ArrowUpRightIcon data-icon="inline-end" />

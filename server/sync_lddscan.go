@@ -220,21 +220,25 @@ func (s *Server) lddscanDNS(ctx context.Context, f *excelize.File, as *db.AssetS
 
 // ---------- Http Data sheet ----------
 
-// lddscanHTTP reads the Http Data (or Url Dedup) sheet → HTTP service assets.
+// lddscanHTTP reads the Http Data sheet → HTTP service assets.
+//
+// Http Data is lddscan's probe result (url + status_code + crawl_flag), so it is
+// the only HTTP source we accept. Hunter/Fofa are raw discovery lists that were
+// never probed; Url Dedup/older fallbacks are intentionally not read.
 func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.AssetStore, res *lddscanResult) error {
-	sheet := resolveSheet(f, "Http Data", "Url Dedup", "Hunter", "Fofa")
-	if sheet == "" {
-		res.warn("未找到 Http Data / Url Dedup sheet，跳过 HTTP 服务导入")
+	if !sheetExists(f, "Http Data") {
+		res.warn("未找到 Http Data sheet，跳过 HTTP 服务导入")
 		return nil
 	}
-	rows, cols, err := openSheet(f, sheet)
+	rows, cols, err := openSheet(f, "Http Data")
 	if err != nil || rows == nil {
 		return err
 	}
 	defer rows.Close()
 
-	// column aliases across the different sheets
-	urlCol := firstCol(cols, "url", "link", "origin_url")
+	// Http Data uses "url"; failed probes have an empty url but a populated
+	// origin_url, and must stay skipped. Do not fall back to origin_url here.
+	urlCol := firstCol(cols, "url")
 	titleCol := firstCol(cols, "title", "web_title")
 	ipCol := firstCol(cols, "ip")
 	statusCol := firstCol(cols, "status_code")
@@ -362,17 +366,6 @@ func sheetExists(f *excelize.File, name string) bool {
 		}
 	}
 	return false
-}
-
-// resolveSheet returns the first of names present in the workbook (exact match),
-// or "" if none exist.
-func resolveSheet(f *excelize.File, names ...string) string {
-	for _, n := range names {
-		if sheetExists(f, n) {
-			return n
-		}
-	}
-	return ""
 }
 
 // cell returns the trimmed value of a column (by lowercased header) or "".

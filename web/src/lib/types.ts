@@ -20,6 +20,7 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  scheduled_pause?: boolean; // 由「定时测试」窗口自动暂停；窗口开始时会自动恢复
   queued?: boolean;
   active?: boolean;
   in_flight?: number;
@@ -949,6 +950,32 @@ export interface Settings {
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链
   notify_digest_interval_min?: number; // 汇总模式周期（分钟），默认 30
+}
+
+// ---- 定时测试窗口 ----
+
+// TaskScheduleRange 是一个半开时段 [start, end)，格式 HH:MM（24 小时制）。
+export interface TaskScheduleRange {
+  start: string;
+  end: string;
+}
+
+// TaskSchedule 是「定时测试」配置 + 服务端返回的当前状态。
+// 工作日 = 周一至周五，非工作日 = 周六/周日；时段不支持跨午夜。
+export interface TaskSchedule {
+  enabled: boolean;
+  timezone?: string;
+  weekday: TaskScheduleRange[];
+  weekend: TaskScheduleRange[];
+  // 以下字段仅 GET/PUT 响应返回：
+  active?: boolean;
+  current?: string; // 当前命中的时段，如 "12:00-14:00"
+  next_change?: string; // RFC3339
+  next_change_action?: "pause" | "resume" | "";
+  // 节假日日历覆盖情况：未覆盖的年份只按周一至周五判断。
+  holiday_year?: number;
+  holiday_covered?: boolean;
+  holiday_source?: string;
 }
 
 // ---- 漏洞 IM 推送 ----

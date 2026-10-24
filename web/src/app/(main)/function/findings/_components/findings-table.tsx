@@ -200,18 +200,25 @@ export function FindingsTable({
                 </TableCell>
                 <TableCell className="max-w-md">
                   <div className="flex min-w-0 flex-col gap-0.5">
-                    {f.finding_id ? (
-                      <Link
-                        href={`/function/findings/detail?id=${f.finding_id}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="truncate font-medium hover:text-primary hover:underline"
-                        title="查看发现详情"
-                      >
-                        {f.name || f.vulnclass || "未分类"}
-                      </Link>
-                    ) : (
-                      <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
-                    )}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      {f.finding_id && (
+                        <code className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          #{f.finding_id}
+                        </code>
+                      )}
+                      {f.finding_id ? (
+                        <Link
+                          href={`/function/findings/detail?id=${f.finding_id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="min-w-0 truncate font-medium hover:text-primary hover:underline"
+                          title="查看发现详情"
+                        >
+                          {f.name || f.vulnclass || "未分类"}
+                        </Link>
+                      ) : (
+                        <span className="min-w-0 truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
+                      )}
+                    </div>
                     <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
                     <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
                   </div>

@@ -84,7 +84,12 @@ export function FindingRetestPanel({
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5">
-          <CardTitle>漏洞复测</CardTitle>
+          <CardTitle className="flex flex-wrap items-center gap-2">
+            漏洞复测
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-normal text-muted-foreground">
+              #{findingId}
+            </code>
+          </CardTitle>
           <CardDescription>在独立会话中验证当前状态，保留每次复测的结论与证据。</CardDescription>
         </div>
         {running?.conversation_id != null ? (
@@ -134,7 +139,7 @@ export function FindingRetestPanel({
                       : statusLabels[item.status]}
                   </Badge>
                   <span className="text-muted-foreground text-xs">
-                    #{item.id} · {new Date(item.created_at).toLocaleString("zh-CN")}
+                    复测 #{item.id} · {new Date(item.created_at).toLocaleString("zh-CN")}
                   </span>
                   {item.conversation_id != null ? (
                     <Button asChild variant="ghost" size="sm" className="ml-auto">

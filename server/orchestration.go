@@ -500,7 +500,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.reseedPlannerPrompt()           // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
 	s.reseedWorkerPrompt()            // worker 提示词:加否定结论证据门槛(一次性)
 	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
-	s.reseedReporterPrompt()          // reporter 提示词加入签名/加密类漏洞的 JS/key/Python 复现要求(一次性)
+	s.reseedReporterPrompt()          // reporter 提示词加入签名/加密取证与 Python PoC 代理参数要求(一次性)
 	s.upgradeReporterTriggerMessage() // 老库补迁移:让 reporter 回传 evidence_version(一次性)
 	s.seedFindingTrafficTools()       // 增加可选证据参数及只读证据工具，保留用户配置
 	s.seedFindingWorkflowTools()
@@ -686,12 +686,13 @@ func (s *Server) reseedWorkerPrompt() {
 }
 
 // reseedReporterPrompt 把「报告撰写」agent 的提示词刷成【当前代码默认】——默认正文新增了
-// 签名/加密类漏洞的 JS 定位、key 来源与 Python 复现脚本要求。seedReporterAgent 只在首次
+// 签名/加密类漏洞的 JS 定位、key 来源、Python 复现脚本，以及 Python PoC 的 -p/--proxy
+// 代理参数要求。seedReporterAgent 只在首次
 // 创建 agent 时 SeedPromptIfEmpty,存量库收不到代码默认的更新;这里用版本管理【追加一个新
 // 版本】并切过去(ResetPromptToDefault),旧版本仍保留在历史里,用户若自定义过可从版本记录
 // 找回。settings flag 守卫 → 只做一次。全新库由 seedReporterAgent 直接 seed 最新默认。
 func (s *Server) reseedReporterPrompt() {
-	const flag = "reporter_prompt_signing_js_v1"
+	const flag = "reporter_prompt_proxy_poc_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -708,7 +709,7 @@ func (s *Server) reseedReporterPrompt() {
 		log.Printf("[prompts] reporter 提示词重刷为新默认失败: %v", err)
 		return
 	}
-	log.Printf("[prompts] reporter 提示词已追加新默认版本(加入签名/加密取证要求,一次性)")
+	log.Printf("[prompts] reporter 提示词已追加新默认版本(加入签名/加密取证与 Python PoC 代理参数要求,一次性)")
 }
 
 // reporterToolCallMessage 必须无条件要求先读一次 get_finding_traffic 再写报告。

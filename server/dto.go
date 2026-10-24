@@ -46,6 +46,7 @@ type TaskDTO struct {
 	CompletedUnix      int64              `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
 	LastActivity       int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
 	Paused             bool               `json:"paused"`
+	ScheduledPause     bool               `json:"scheduled_pause"` // 由定时测试窗口自动暂停
 	Queued             bool               `json:"queued"`
 	Tokens             TokenTotalDTO      `json:"tokens"` // whole-task token consumption
 	GoalsTotal         int                `json:"goals_total"`
@@ -125,6 +126,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompletedAt:        completedRFC(lifecycle.CompletedAt),
 		CompletedUnix:      lifecycle.CompletedAt,
 		Paused:             lifecycle.Paused,
+		ScheduledPause:     lifecycle.ScheduledPause,
 		Queued:             lifecycle.Queued,
 		LLMProfileID:       llmState.ProfileID,
 		LLMProfileIDs:      profileIDs,

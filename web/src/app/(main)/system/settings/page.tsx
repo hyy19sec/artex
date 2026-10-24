@@ -2,7 +2,16 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  ClockIcon,
+  CpuIcon,
+  FlaskConicalIcon,
+  KeyboardIcon,
+  RadioTowerIcon,
+  SearchIcon,
+  ShieldAlertIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,9 +22,74 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { Settings } from "@/lib/types";
+import type { Settings, TaskSchedule, TaskScheduleRange } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
+
+// ScheduleRangeEditor 编辑一个日类型（工作日/非工作日）的多个时段。
+// 时间用 <input type="time">，值天然是零填充的 HH:MM，可直接字符串比较先后。
+function ScheduleRangeEditor({
+  label,
+  ranges,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  ranges: TaskScheduleRange[];
+  onChange: (ranges: TaskScheduleRange[]) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-t pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-muted-foreground text-xs">{label}</div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => onChange([...ranges, { start: "09:00", end: "18:00" }])}
+        >
+          添加时段
+        </Button>
+      </div>
+      {ranges.length === 0 ? (
+        <p className="text-muted-foreground text-xs">未配置（当天不测试）</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {ranges.map((range, index) => (
+            <div key={`${range.start}-${range.end}-${index}`} className="flex items-center gap-2">
+              <Input
+                type="time"
+                value={range.start}
+                disabled={disabled}
+                className="w-28 font-mono text-sm"
+                onChange={(e) => onChange(ranges.map((r, i) => (i === index ? { ...r, start: e.target.value } : r)))}
+              />
+              <span className="text-muted-foreground text-xs">至</span>
+              <Input
+                type="time"
+                value={range.end}
+                disabled={disabled}
+                className="w-28 font-mono text-sm"
+                onChange={(e) => onChange(ranges.map((r, i) => (i === index ? { ...r, end: e.target.value } : r)))}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                disabled={disabled}
+                aria-label="删除时段"
+                className="size-7 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(ranges.filter((_, i) => i !== index))}
+              >
+                <Trash2Icon className="size-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SystemSettingsPage() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
@@ -45,6 +119,12 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  // 定时测试窗口（独立于 /api/settings 的资源）。
+  const [scheduleEnabled, setScheduleEnabled] = React.useState(false);
+  const [weekdayRanges, setWeekdayRanges] = React.useState<TaskScheduleRange[]>([]);
+  const [weekendRanges, setWeekendRanges] = React.useState<TaskScheduleRange[]>([]);
+  const [scheduleStatus, setScheduleStatus] = React.useState<TaskSchedule | null>(null);
+  const [savingSchedule, setSavingSchedule] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
@@ -63,6 +143,13 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+  }, []);
+
+  const applySchedule = React.useCallback((s: TaskSchedule) => {
+    setScheduleEnabled(!!s.enabled);
+    setWeekdayRanges(s.weekday ?? []);
+    setWeekendRanges(s.weekend ?? []);
+    setScheduleStatus(s);
   }, []);
 
   const saveWorkers = () => {
@@ -99,6 +186,32 @@ export default function SystemSettingsPage() {
       .finally(() => setSavingMaxFrontier(false));
   };
 
+  const saveSchedule = () => {
+    const allRanges = [...weekdayRanges, ...weekendRanges];
+    if (allRanges.some((range) => !range.start || !range.end || range.start >= range.end)) {
+      toast.error("时段无效：开始时间必须早于结束时间（不支持跨午夜）");
+      return;
+    }
+    if (scheduleEnabled && allRanges.length === 0) {
+      toast.error("启用定时测试时至少要配置一个时段");
+      return;
+    }
+    setSavingSchedule(true);
+    api
+      .setTaskSchedule({
+        enabled: scheduleEnabled,
+        timezone: scheduleStatus?.timezone || "Asia/Shanghai",
+        weekday: weekdayRanges,
+        weekend: weekendRanges,
+      })
+      .then((schedule) => {
+        applySchedule(schedule);
+        toast.success(schedule.enabled ? "定时测试已保存并立即生效" : "定时测试已关闭");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingSchedule(false));
+  };
+
   const savePython = () => {
     setSaving(true);
     api
@@ -126,6 +239,30 @@ export default function SystemSettingsPage() {
       .catch(() => undefined)
       .finally(() => setLoaded(true));
   }, [apply]);
+
+  // 定时窗口的状态（当前是否允许、下次切换）每 30 秒刷新一次，与服务端检查周期一致。
+  // 首次加载同步回填可编辑配置；后续轮询只更新状态，避免覆盖用户正在编辑的时段。
+  React.useEffect(() => {
+    let disposed = false;
+    api
+      .taskSchedule()
+      .then((schedule) => {
+        if (!disposed) applySchedule(schedule);
+      })
+      .catch(() => undefined);
+    const timer = setInterval(() => {
+      api
+        .taskSchedule()
+        .then((schedule) => {
+          if (!disposed) setScheduleStatus(schedule);
+        })
+        .catch(() => undefined);
+    }, 30000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [applySchedule]);
 
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
@@ -719,6 +856,79 @@ export default function SystemSettingsPage() {
                 保存后立即生效：下一次 add_intent 即按新上限拦截；不会删除已有 open 意图，也不会主动触发
                 planner。当前 open 高于上限时，新增会被拒绝，需先执行、合并或关闭已有意图。
               </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ClockIcon className="size-4" />
+              定时测试窗口
+            </CardTitle>
+            <CardDescription>
+              到点自动暂停任务，下一个允许时段开始自动恢复。工作日 = 周一至周五（不含法定节假日），非工作日 =
+              周末与法定节假日。
+              <br />
+              <b>节假日按非工作日时段执行</b>：内置已发布的年度安排（当前含 2026
+              年国务院节假日安排），法定节假日全天使用“非工作日”时段（低价时段）；调休上班的周末也按非工作日处理，与
+              DeepSeek「周一至周五为高峰」的口径一致。
+              <br />
+              <b>只恢复定时暂停的任务</b>：手动暂停的任务不会被自动恢复；时段不支持跨午夜，需要跨午夜请拆成两段。
+              <br />
+              定时窗口生效期间，手动恢复会在下一次检查（30 秒内）被再次暂停；如需长期放行，请先关闭定时测试。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-4">
+              <Label className="font-normal text-muted-foreground text-sm">启用定时测试</Label>
+              <Switch
+                checked={scheduleEnabled}
+                onCheckedChange={setScheduleEnabled}
+                disabled={!loaded || savingSchedule}
+              />
+            </div>
+            <ScheduleRangeEditor
+              label="工作日 / 高峰日（周一至周五，不含法定节假日）"
+              ranges={weekdayRanges}
+              onChange={setWeekdayRanges}
+              disabled={!loaded || savingSchedule}
+            />
+            <ScheduleRangeEditor
+              label="非工作日 / 低价日（周末、法定节假日）"
+              ranges={weekendRanges}
+              onChange={setWeekendRanges}
+              disabled={!loaded || savingSchedule}
+            />
+            {scheduleStatus?.enabled ? (
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-muted-foreground text-xs">
+                <div>
+                  当前：
+                  {scheduleStatus.active
+                    ? `允许测试（${scheduleStatus.current || "时段内"}）`
+                    : "不在允许时段，任务会自动暂停"}
+                </div>
+                {scheduleStatus.next_change ? (
+                  <div>
+                    下次{scheduleStatus.next_change_action === "resume" ? "开始" : "暂停"}：
+                    {new Date(scheduleStatus.next_change).toLocaleString("zh-CN", {
+                      timeZone: scheduleStatus.timezone || "Asia/Shanghai",
+                    })}
+                  </div>
+                ) : null}
+                <div>时区：{scheduleStatus.timezone || "Asia/Shanghai"}</div>
+                <div title={scheduleStatus.holiday_source || undefined}>
+                  节假日：
+                  {scheduleStatus.holiday_covered
+                    ? `已内置 ${scheduleStatus.holiday_year} 年安排（法定节假日按非工作日时段执行）`
+                    : `${scheduleStatus.holiday_year} 年数据未内置，当前仅按周一至周五判断`}
+                </div>
+              </div>
+            ) : null}
+            <div className="flex justify-end">
+              <Button onClick={saveSchedule} disabled={!loaded || savingSchedule}>
+                {savingSchedule ? "保存中…" : "保存定时设置"}
+              </Button>
             </div>
           </CardContent>
         </Card>

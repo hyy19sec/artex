@@ -93,7 +93,18 @@ func (s *Server) applyTaskControl(t *Task, action string) (taskControlResult, er
 	return s.applyTaskControlWithCause(t, action, agent.AbortPausedByUser)
 }
 
+// applyScheduledPause pauses a task on behalf of the automatic testing-window
+// schedule. The persisted origin lets the window-start pass resume only those
+// tasks, never a task the user paused manually.
+func (s *Server) applyScheduledPause(t *Task) (taskControlResult, error) {
+	return s.applyTaskControlWithOrigin(t, "pause", agent.AbortPausedBySchedule, true)
+}
+
 func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause error) (taskControlResult, error) {
+	return s.applyTaskControlWithOrigin(t, action, pauseCause, false)
+}
+
+func (s *Server) applyTaskControlWithOrigin(t *Task, action string, pauseCause error, scheduled bool) (taskControlResult, error) {
 	if t == nil {
 		return taskControlResult{}, fmt.Errorf("task not found")
 	}
@@ -123,7 +134,7 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			pauseCause = agent.AbortPausedByUser
 		}
 		s.engine.Pause(t.ID, pauseCause)
-		if err := s.m.ApplyTaskPause(t.ID); err != nil {
+		if err := s.m.ApplyTaskPauseWithOrigin(t.ID, scheduled); err != nil {
 			if !wasEnginePaused && !wasQueued {
 				s.engine.Resume(t)
 			}

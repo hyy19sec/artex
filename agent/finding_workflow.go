@@ -10,7 +10,7 @@ import (
 
 const findingIDGuidance = "\n\n**漏洞编号约定**：finding_id 是独立漏洞记录 ID；finding_node_id 是探索节点 ID。list_findings / list_task_findings / node_detail / get_task_node_detail 的 id 保留为探索节点 ID，应从同一返回的 finding_id 读取独立编号。get_finding_traffic / bind_finding_traffic 用独立 finding_id。旧 update_finding_report 的 finding_id 参数仍传 finding_node_id。不要把 report_finding 第一行的数字用于证据工具，也不要遇到编号错误后猜测其他数字。"
 
-const findingSigningGuidance = "\n\n**签名/加密类漏洞取证要求**：若漏洞涉及请求签名、加密、防重放或动态 token，report_finding 的 evidence 必须包含：(1) 具体 JS 文件 URL/路径（有 hash 更佳）与关键函数/代码片段；(2) 算法与参数规则（参数排序、编码、时间戳/nonce）；(3) key/iv/salt/公钥的具体来源（硬编码位置、接口下发、本地存储字段等）；(4) 受影响接口的 method + path；(5) 可直接运行的 Python 复现脚本或脚本文件路径。无法定位时写明已检查范围和“未定位”，禁止猜测 key 或编造脚本。"
+const findingSigningGuidance = "\n\n**签名/加密类漏洞取证要求**：若漏洞涉及请求签名、加密、防重放或动态 token，report_finding 的 evidence 必须包含：(1) 具体 JS 文件 URL/路径（有 hash 更佳）与关键函数/代码片段；(2) 算法与参数规则（参数排序、编码、时间戳/nonce）；(3) key/iv/salt/公钥的具体来源（硬编码位置、接口下发、本地存储字段等）；(4) 受影响接口的 method + path；(5) 可直接运行的 Python 复现脚本或脚本文件路径。无法定位时写明已检查范围和“未定位”，禁止猜测 key 或编造脚本。\n\n**Python PoC 代理参数要求**：凡是给出可直接运行的 Python 复现脚本（包括签名/加密类漏洞的脚本），脚本都必须提供 `-p/--proxy` 参数（值为 `http://host:port`、`https://host:port` 或 `socks5h://host:port`；缺省为空表示直连），并让所有 HTTP 请求都走该代理（`requests` 用 `proxies=`；SOCKS5 需在依赖中注明 `requests[socks]`）。同时要在 evidence/报告里给出带 `-p` 的运行示例，例如 `python poc.py -p http://127.0.0.1:8080`，便于复现者按自己的代理环境验证。"
 
 // signingGuidanceFor returns the signing/encryption evidence contract for any
 // agent that can record or write a finding report. It is code-owned (not seeded),

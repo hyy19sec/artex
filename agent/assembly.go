@@ -61,6 +61,10 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 		out = ToolResolve(ctx, agentKey, out)
 	}
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	// Code-owned asset-probe guidance: tells agents that lddscan's Http Data is the
+	// authoritative http:80 / https:443 probe result, and subdomains absent from it
+	// already failed during the scan (so they must not be re-probed blindly).
+	def.FindingGuidance += assetProbeGuidanceFor(out)
 	for i, t := range out {
 		out[i] = guardPanic(t)
 	}

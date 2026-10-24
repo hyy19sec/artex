@@ -36,6 +36,7 @@ import type {
   Task,
   TaskCategory,
   TaskNode,
+  TaskSchedule,
   TaskTemplate,
   TokenTotal,
   TokenUsage,
@@ -3338,6 +3339,18 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
+};
+
+// demo：定时测试默认关闭，工作日/非工作日各留一个示例时段。
+export const taskSchedule: TaskSchedule = {
+  enabled: false,
+  timezone: "Asia/Shanghai",
+  weekday: [
+    { start: "12:00", end: "14:00" },
+    { start: "18:00", end: "23:00" },
+  ],
+  weekend: [{ start: "09:00", end: "23:00" }],
+  active: false,
 };
 
 // ── LLM 轮询（故障转移）──────────────────────────────────────────────────────

@@ -143,7 +143,9 @@ function FindingDetailInner() {
           <h1 className="max-w-md truncate text-sm font-semibold" title={title}>
             {title}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+            #{finding.finding_id || finding.id}
+          </code>
           <Separator orientation="vertical" className="mx-1 h-4" />
           <StatusBadge domain="severity" value={finding.severity} dot />
           <StatusBadge domain="finding" value={finding.status} dot />
@@ -224,7 +226,7 @@ function FindingDetailInner() {
                 {/* 漏洞 ID */}
                 <FieldRow label="漏洞 ID">
                   <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-                    #{finding.id}
+                    #{finding.finding_id || finding.id}
                   </code>
                 </FieldRow>
 

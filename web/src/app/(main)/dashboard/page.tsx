@@ -936,6 +936,11 @@ export default function DashboardPage() {
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
+                      {f.finding_id && (
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          #{f.finding_id}
+                        </code>
+                      )}
                       <span className="text-[11px] font-semibold">{f.vulnclass}</span>
                       {f.task_description && (
                         <span className="truncate text-[10px] text-muted-foreground">{f.task_description}</span>
