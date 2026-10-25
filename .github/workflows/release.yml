@@ -27,7 +27,8 @@ jobs:
           name: web-dist
           path: web/out
 
-  # ② 五平台交叉编译（内嵌前端）+ 打 zip
+  # ② 双平台交叉编译（内嵌前端）+ 打 zip
+  # 发布只构建 linux/amd64 与 windows/amd64；macOS / arm64 如有需要可手动跑 build.sh。
   binaries:
     needs: frontend
     runs-on: ubuntu-latest
@@ -35,9 +36,6 @@ jobs:
       matrix:
         include:
           - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
@@ -70,8 +68,8 @@ jobs:
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
           path: "dist/*.zip"
-      # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
-      - if: matrix.goos == 'linux'
+      # Linux amd64 二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
+      - if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         uses: actions/upload-artifact@v4
         with:
           name: bin-linux-${{ matrix.goarch }}
@@ -129,8 +127,8 @@ jobs:
           generate_release_notes: false
           overwrite_files: true # 覆盖 0.3.21 这类重发时已有的同名资产
 
-  # ④ 多架构镜像 → 推 GitHub Container Registry（复用 binaries 编好的 Linux
-  #    二进制，镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）。
+  # ④ linux/amd64 镜像 → 推 GitHub Container Registry（复用 binaries 编好的
+  #    Linux amd64 二进制，镜像里只装工具 + 放二进制）。
   #    镜像名取自当前仓库 ghcr.io/<owner>/<repo>，用内置 GITHUB_TOKEN 认证，
   #    无需配置任何 secret。
   docker:
@@ -142,11 +140,6 @@ jobs:
         with:
           name: bin-linux-amd64
           path: dist/amd64
-      - uses: actions/download-artifact@v4
-        with:
-          name: bin-linux-arm64
-          path: dist/arm64
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       # GHCR 只接受小写镜像名；GitHub 用户名/仓库名可能含大写，统一转小写。
       - name: 计算小写镜像名
@@ -167,7 +160,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

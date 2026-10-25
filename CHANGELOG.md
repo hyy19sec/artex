@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 构建与发布
+
+- **发布产物精简为 linux/amd64 与 windows/amd64**：`build.sh --release` 与 release workflow 不再默认构建 macOS 与 linux/arm64；Docker 镜像也改为仅 linux/amd64。需要其他目标时仍可传 `--target` / `ARTEX_TARGETS` 手动构建。
+
 ## [0.3.24] - 2026-10-26
 
 ### 新增的功能

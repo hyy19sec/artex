@@ -2,7 +2,9 @@
 # ARTEX cross-platform release builder.
 #
 # The default mode builds one target and embeds the already-exported frontend.
-# `./build.sh --release` builds and packages all supported desktop/server targets.
+# `./build.sh --release` builds and packages the default release targets
+# (linux/amd64 + windows/amd64). Other targets remain available via --target /
+# ARTEX_TARGETS when explicitly requested.
 #
 # Environment variables:
 #   ARTEX_TARGET_OS=linux             One target OS in single-target mode.
@@ -35,7 +37,7 @@ usage() {
   ./build.sh --release               编译并打包全部支持的目标
 
 选项：
-  --release              构建 Linux、macOS、Windows 的 amd64/arm64 目标并生成 zip
+  --release              构建 Linux amd64 与 Windows amd64 目标并生成 zip
   --target OS/ARCH       设置单个目标，例如 windows/amd64
   --upx                  强制使用 UPX 压缩二进制（可能影响部分 Linux 环境兼容性）
   --no-compress          不使用 UPX，仅使用 Go linker 裁剪并压缩 zip
@@ -46,7 +48,7 @@ usage() {
 EOF
 }
 
-RELEASE_TARGETS_DEFAULT="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64"
+RELEASE_TARGETS_DEFAULT="linux/amd64,windows/amd64"
 ARTEX_RELEASE="${ARTEX_RELEASE:-0}"
 ARTEX_COMPRESS="${ARTEX_COMPRESS:-off}"
 ARTEX_PACKAGE="${ARTEX_PACKAGE:-0}"

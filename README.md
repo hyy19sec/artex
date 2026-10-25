@@ -124,7 +124,7 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 ### 方式五：构建跨平台 Release 压缩包
 
-`build.sh` 会先构建并嵌入前端，再使用 Go linker 去除调试信息，并将发布文件压缩为 zip。Release 模式默认生成 Linux amd64/arm64、macOS amd64/arm64 和 Windows amd64 的 zip 包：
+`build.sh` 会先构建并嵌入前端，再使用 Go linker 去除调试信息，并将发布文件压缩为 zip。Release 模式默认只生成 Linux amd64 与 Windows amd64 的 zip 包（macOS / arm64 如需构建，可传 `--target` 或 `ARTEX_TARGETS`）：
 
 ```bash
 ./build.sh --release
