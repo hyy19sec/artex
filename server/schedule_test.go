@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -176,5 +177,77 @@ func TestScheduleDisabledStatus(t *testing.T) {
 	status := sch.status(time.Now())
 	if status.Enabled || status.Active || status.NextChange != "" {
 		t.Fatalf("disabled schedule status = %#v", status)
+	}
+}
+
+func TestScheduleManagesTask(t *testing.T) {
+	global := mustNormalizeSchedule(t, TaskSchedule{})
+	if !global.managesTask("1") || !global.managesTask("999") {
+		t.Fatal("TaskID=0 should manage every task")
+	}
+	scoped := mustNormalizeSchedule(t, TaskSchedule{TaskID: 7})
+	if !scoped.managesTask("7") {
+		t.Fatal("scoped schedule should manage its task")
+	}
+	if scoped.managesTask("8") || scoped.managesTask("") || scoped.managesTask("not-a-number") {
+		t.Fatal("scoped schedule must not manage other ids")
+	}
+	if _, err := (TaskSchedule{Enabled: true, TaskID: -1}).normalize(); err == nil {
+		t.Fatal("negative task_id should be rejected")
+	}
+}
+
+// TestScheduledPauseOnlySelectedTask locks in two behaviors:
+//  1. only the configured task is paused (the other running task is untouched);
+//  2. a task whose persisted status is still "created" but whose engine loops are
+//     live counts as running — the predicate must not rely on tasks.status alone.
+func TestScheduledPauseOnlySelectedTask(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+
+	selected, err := m.CreateTask("schedule selected", "test", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := m.CreateTask("schedule other", "test", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = m.DeleteTask(selected.ID, DeleteTaskOptions{})
+		_, _ = m.DeleteTask(other.ID, DeleteTaskOptions{})
+	}()
+
+	s := newAdmissionTestServer(m, nil)
+	// Simulate live engine loops while the persisted status stays "created".
+	s.engine.started.Store(selected.ID, true)
+	s.engine.started.Store(other.ID, true)
+
+	selectedID, _ := strconv.ParseInt(selected.ID, 10, 64)
+	sch := mustNormalizeSchedule(t, TaskSchedule{
+		Enabled: true,
+		TaskID:  selectedID,
+		Weekday: []ScheduleRange{{Start: "09:00", End: "10:00"}},
+		Weekend: []ScheduleRange{{Start: "09:00", End: "10:00"}},
+	})
+
+	s.pauseTasksForSchedule(sch)
+
+	if lc := selected.lifecycleSnapshot(); !lc.Paused || !lc.ScheduledPause {
+		t.Fatalf("selected task not paused by schedule: %+v", lc)
+	}
+	if lc := other.lifecycleSnapshot(); lc.Paused || lc.ScheduledPause {
+		t.Fatalf("unselected task was paused: %+v", lc)
+	}
+
+	// Switching the target must release the previously managed task.
+	otherID, _ := strconv.ParseInt(other.ID, 10, 64)
+	sch.TaskID = otherID
+	s.releaseUnmanagedScheduledPauses(sch)
+	if lc := selected.lifecycleSnapshot(); lc.Paused || lc.ScheduledPause {
+		t.Fatalf("previous target was not released: %+v", lc)
 	}
 }

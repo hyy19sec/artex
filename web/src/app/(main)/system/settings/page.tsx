@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { Settings, TaskSchedule, TaskScheduleRange } from "@/lib/types";
+import type { Settings, Task, TaskSchedule, TaskScheduleRange } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -124,6 +124,9 @@ export default function SystemSettingsPage() {
   const [weekdayRanges, setWeekdayRanges] = React.useState<TaskScheduleRange[]>([]);
   const [weekendRanges, setWeekendRanges] = React.useState<TaskScheduleRange[]>([]);
   const [scheduleStatus, setScheduleStatus] = React.useState<TaskSchedule | null>(null);
+  // 定时窗口的生效任务："0" = 全部任务（兼容旧配置），否则为任务 id。
+  const [scheduleTaskID, setScheduleTaskID] = React.useState("0");
+  const [scheduleTasks, setScheduleTasks] = React.useState<Task[]>([]);
   const [savingSchedule, setSavingSchedule] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
@@ -149,6 +152,7 @@ export default function SystemSettingsPage() {
     setScheduleEnabled(!!s.enabled);
     setWeekdayRanges(s.weekday ?? []);
     setWeekendRanges(s.weekend ?? []);
+    setScheduleTaskID(String(s.task_id && s.task_id > 0 ? s.task_id : 0));
     setScheduleStatus(s);
   }, []);
 
@@ -200,6 +204,7 @@ export default function SystemSettingsPage() {
     api
       .setTaskSchedule({
         enabled: scheduleEnabled,
+        task_id: Number(scheduleTaskID) || 0,
         timezone: scheduleStatus?.timezone || "Asia/Shanghai",
         weekday: weekdayRanges,
         weekend: weekendRanges,
@@ -263,6 +268,14 @@ export default function SystemSettingsPage() {
       clearInterval(timer);
     };
   }, [applySchedule]);
+
+  // 定时窗口「生效任务」下拉框的数据源。任务列表变化后刷新页面即可。
+  React.useEffect(() => {
+    api
+      .tasks()
+      .then((r) => setScheduleTasks(r.tasks))
+      .catch(() => undefined);
+  }, []);
 
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
@@ -867,7 +880,8 @@ export default function SystemSettingsPage() {
               定时测试窗口
             </CardTitle>
             <CardDescription>
-              到点自动暂停任务，下一个允许时段开始自动恢复。工作日 = 周一至周五（不含法定节假日），非工作日 =
+              到点自动暂停「生效任务」，下一个允许时段开始自动恢复；选择「全部任务」时对所有运行中/排队中的任务生效。
+              切换生效任务后，旧任务若仍处于定时暂停状态会自动恢复。工作日 = 周一至周五（不含法定节假日），非工作日 =
               周末与法定节假日。
               <br />
               <b>节假日按非工作日时段执行</b>：内置已发布的年度安排（当前含 2026
@@ -888,6 +902,25 @@ export default function SystemSettingsPage() {
                 disabled={!loaded || savingSchedule}
               />
             </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label className="font-normal text-muted-foreground text-sm">生效任务</Label>
+              <Select value={scheduleTaskID} onValueChange={setScheduleTaskID} disabled={!loaded || savingSchedule}>
+                <SelectTrigger className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">全部任务</SelectItem>
+                  {scheduleTasks.map((task) => (
+                    <SelectItem key={task.id} value={task.id}>
+                      {task.name?.trim() ? task.name : `任务 #${task.id}`}
+                    </SelectItem>
+                  ))}
+                  {scheduleTaskID !== "0" && !scheduleTasks.some((task) => task.id === scheduleTaskID) ? (
+                    <SelectItem value={scheduleTaskID}>任务 #{scheduleTaskID}（不可用）</SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </div>
             <ScheduleRangeEditor
               label="工作日 / 高峰日（周一至周五，不含法定节假日）"
               ranges={weekdayRanges}
@@ -907,6 +940,13 @@ export default function SystemSettingsPage() {
                   {scheduleStatus.active
                     ? `允许测试（${scheduleStatus.current || "时段内"}）`
                     : "不在允许时段，任务会自动暂停"}
+                </div>
+                <div>
+                  生效任务：
+                  {scheduleStatus.task_id && scheduleStatus.task_id > 0
+                    ? scheduleTasks.find((task) => task.id === String(scheduleStatus.task_id))?.name?.trim() ||
+                      `任务 #${scheduleStatus.task_id}`
+                    : "全部任务"}
                 </div>
                 {scheduleStatus.next_change ? (
                   <div>

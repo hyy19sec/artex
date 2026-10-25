@@ -32,7 +32,10 @@ type ScheduleRange struct {
 
 // TaskSchedule 是定时测试窗口配置。Timezone 为空时按 Asia/Shanghai。
 type TaskSchedule struct {
-	Enabled  bool            `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// TaskID 限定定时窗口只作用于该任务；0 = 全部任务（兼容旧配置）。
+	// 切换目标后，旧任务若带 scheduled_pause 标记会自动恢复。
+	TaskID   int64           `json:"task_id,omitempty"`
 	Timezone string          `json:"timezone,omitempty"`
 	Weekday  []ScheduleRange `json:"weekday"` // 周一至周五
 	Weekend  []ScheduleRange `json:"weekend"` // 周六、周日
@@ -121,6 +124,9 @@ func normalizeScheduleRanges(in []ScheduleRange) ([]ScheduleRange, error) {
 }
 
 func (sch TaskSchedule) normalize() (TaskSchedule, error) {
+	if sch.TaskID < 0 {
+		return sch, fmt.Errorf("task_id 不能为负数")
+	}
 	sch.Timezone = strings.TrimSpace(sch.Timezone)
 	if sch.Timezone == "" {
 		sch.Timezone = defaultScheduleTimezone
@@ -150,6 +156,16 @@ func decodeTaskSchedule(raw string) (TaskSchedule, error) {
 		return sch, err
 	}
 	return sch.normalize()
+}
+
+// managesTask reports whether the schedule controls the given task. TaskID<=0
+// keeps the legacy global behavior and manages every task.
+func (sch TaskSchedule) managesTask(id string) bool {
+	if sch.TaskID <= 0 {
+		return true
+	}
+	n, err := strconv.ParseInt(id, 10, 64)
+	return err == nil && n == sch.TaskID
 }
 
 func (sch TaskSchedule) location() *time.Location {
@@ -285,6 +301,11 @@ func (s *Server) setTaskSchedule(sch TaskSchedule) error {
 	if err != nil {
 		return err
 	}
+	if normalized.TaskID > 0 {
+		if _, ok := s.m.Task(strconv.FormatInt(normalized.TaskID, 10)); !ok {
+			return fmt.Errorf("指定的任务不存在: %d", normalized.TaskID)
+		}
+	}
 	raw, err := json.Marshal(normalized)
 	if err != nil {
 		return err
@@ -343,30 +364,62 @@ func (s *Server) startTaskScheduleLoop() {
 
 // applyTaskSchedule enforces the current window: outside → pause running/queued
 // tasks (marked scheduled); inside → resume only tasks paused by the schedule.
+// When TaskID is set, only that task is managed; tasks left over from a previous
+// target are released so switching the target cannot strand a scheduled pause.
 func (s *Server) applyTaskSchedule() {
 	sch := s.currentTaskSchedule()
 	now := time.Now()
 	if !sch.Enabled {
-		s.resumeScheduledTasks("定时测试已关闭")
+		s.resumeScheduledTasks("定时测试已关闭", TaskSchedule{})
 		return
 	}
+	s.releaseUnmanagedScheduledPauses(sch)
 	if active, window := sch.activeAt(now); active {
-		s.resumeScheduledTasks("进入测试时段 " + window)
+		s.resumeScheduledTasks("进入测试时段 "+window, sch)
 		return
 	}
-	s.pauseTasksForSchedule()
+	s.pauseTasksForSchedule(sch)
 }
 
-func (s *Server) pauseTasksForSchedule() {
+// releaseUnmanagedScheduledPauses resumes tasks that were paused by a previous
+// schedule target but are no longer managed by the current configuration.
+func (s *Server) releaseUnmanagedScheduledPauses(sch TaskSchedule) {
+	if sch.TaskID <= 0 {
+		return // 全局模式管理所有任务，没有「不再受管」的任务
+	}
+	released := 0
+	for _, t := range s.m.List() {
+		lc := t.lifecycleSnapshot()
+		if !lc.Paused || !lc.ScheduledPause || isTerminalStatus(lc.Status) || s.engine.IsDeleting(t.ID) {
+			continue
+		}
+		if sch.managesTask(t.ID) {
+			continue
+		}
+		if _, err := s.admitPausedTask(t); err != nil {
+			log.Printf("[schedule] 恢复不再受管任务 #%s 失败: %v", t.ID, err)
+			continue
+		}
+		released++
+	}
+	if released > 0 {
+		log.Printf("[schedule] 生效任务已更改为 #%d，已恢复 %d 个不再受管的任务", sch.TaskID, released)
+	}
+}
+
+func (s *Server) pauseTasksForSchedule(sch TaskSchedule) {
 	paused := 0
 	for _, t := range s.m.List() {
+		if !sch.managesTask(t.ID) {
+			continue
+		}
 		lc := t.lifecycleSnapshot()
 		if lc.Paused || isTerminalStatus(lc.Status) || s.engine.IsDeleting(t.ID) {
 			continue
 		}
-		// Only pause tasks that can consume resources. "created" tasks that are
-		// still being decomposed and are not queued should not be touched.
-		if lc.Status != "running" && !lc.Queued {
+		// 用推导状态而不是持久化的 tasks.status：首次运行的任务在 PG 里可能
+		// 一直是 created（只有终态重跑才会写 running），但引擎循环其实在跑。
+		if st := s.resolvedTaskStatus(t); st != "running" && st != "queued" {
 			continue
 		}
 		if _, err := s.applyScheduledPause(t); err != nil {
@@ -380,13 +433,20 @@ func (s *Server) pauseTasksForSchedule() {
 		paused++
 	}
 	if paused > 0 {
-		log.Printf("[schedule] 当前不在允许时段，已自动暂停 %d 个任务", paused)
+		scope := "全部任务"
+		if sch.TaskID > 0 {
+			scope = fmt.Sprintf("任务 #%d", sch.TaskID)
+		}
+		log.Printf("[schedule] 当前不在允许时段，已自动暂停 %d 个任务（%s）", paused, scope)
 	}
 }
 
-func (s *Server) resumeScheduledTasks(reason string) {
+func (s *Server) resumeScheduledTasks(reason string, scope TaskSchedule) {
 	resumed := 0
 	for _, t := range s.m.List() {
+		if !scope.managesTask(t.ID) {
+			continue
+		}
 		lc := t.lifecycleSnapshot()
 		if !lc.Paused || !lc.ScheduledPause || isTerminalStatus(lc.Status) || s.engine.IsDeleting(t.ID) {
 			continue

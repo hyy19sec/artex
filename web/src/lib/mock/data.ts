@@ -3344,6 +3344,7 @@ export const settings: Settings = {
 // demo：定时测试默认关闭，工作日/非工作日各留一个示例时段。
 export const taskSchedule: TaskSchedule = {
   enabled: false,
+  task_id: 0,
   timezone: "Asia/Shanghai",
   weekday: [
     { start: "12:00", end: "14:00" },

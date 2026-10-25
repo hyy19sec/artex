@@ -964,6 +964,8 @@ export interface TaskScheduleRange {
 // 工作日 = 周一至周五，非工作日 = 周六/周日；时段不支持跨午夜。
 export interface TaskSchedule {
   enabled: boolean;
+  // 只让定时窗口管理指定任务；0 / 省略 = 全部任务（兼容旧配置）。
+  task_id?: number;
   timezone?: string;
   weekday: TaskScheduleRange[];
   weekend: TaskScheduleRange[];
