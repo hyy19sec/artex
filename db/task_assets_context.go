@@ -23,7 +23,7 @@ context_tasks AS (
 
 const contextCoverageCTE = directTaskContextCTE + `,
 target AS (
-  SELECT DISTINCT a.id, a.type,
+  SELECT DISTINCT a.id, a.type, a.domain,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
          a.has_js, a.service_type, a.content_length, a.page_title, a.status_code
   FROM assets a
@@ -39,7 +39,7 @@ target AS (
   )
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
 	UNION
-	SELECT a.id, a.type,
+	SELECT a.id, a.type, a.domain,
 	       COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label,
 	       a.has_js, a.service_type, a.content_length, a.page_title, a.status_code
 	FROM assets a
@@ -165,6 +165,16 @@ FROM target GROUP BY target.type ORDER BY target.type`, taskID)
 // ListUntestedAssetsWithSources is the direct-source-aware backlog query used
 // by inherited tasks. Source fact anchors remove assets from the backlog.
 func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, limit, offset int) ([]CoverageAsset, int, error) {
+	return s.ListUntestedAssetsWithSourcesExcluding(taskID, typ, nil, limit, offset)
+}
+
+// ListUntestedAssetsWithSourcesExcluding is ListUntestedAssetsWithSources with
+// an optional list of domain suffixes to exclude from both the count and the
+// page. Suffixes are matched against the asset's host column (not url): either
+// the bare host equals the suffix or the host ends with ".<suffix>". This is
+// used to drop closed asset families (e.g. aedev.feishu.cn) without excluding
+// their whole root domain. A nil/empty list keeps the original behavior.
+func (s *AssetStore) ListUntestedAssetsWithSourcesExcluding(taskID int64, typ string, excludeDomainSuffixes []string, limit, offset int) ([]CoverageAsset, int, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -172,10 +182,10 @@ func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, lim
 		offset = 0
 	}
 	typeFilter := ""
-	args := []any{taskID}
+	baseArgs := []any{taskID}
 	if typ != "" {
 		typeFilter = " AND target.type = $2"
-		args = append(args, typ)
+		baseArgs = append(baseArgs, typ)
 	}
 	// Only a type=service request exposes the HTTP-specific fields (and uses the
 	// has_js/content_length ordering); every other request is plain id order.
@@ -183,14 +193,19 @@ func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, lim
 	if typ == "service" {
 		eligible = "(target.type='service' AND target.label ~* '^https?://')"
 	}
+	excludeClause := ""
+	if suffixes := normalizeDomainSuffixes(excludeDomainSuffixes); len(suffixes) > 0 {
+		baseArgs = append(baseArgs, suffixes)
+		excludeClause = " AND NOT EXISTS (SELECT 1 FROM unnest($" + strconv.Itoa(len(baseArgs)) + "::text[]) sfx WHERE lower(target.domain) = sfx OR right(lower(target.domain), length(sfx) + 1) = '.' || sfx)"
+	}
 	var total int
 	if err := s.db.QueryRow(`WITH `+contextCoverageCTE+`
-SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter, args...).Scan(&total); err != nil {
+SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+excludeClause, baseArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	pageArgs := append(append([]any{}, args...), limit, offset)
-	limitPosition := strconv.Itoa(len(args) + 1)
-	offsetPosition := strconv.Itoa(len(args) + 2)
+	pageArgs := append(append([]any{}, baseArgs...), limit, offset)
+	limitPosition := strconv.Itoa(len(baseArgs) + 1)
+	offsetPosition := strconv.Itoa(len(baseArgs) + 2)
 	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
 SELECT target.id, target.type, target.label,
        CASE WHEN `+eligible+` THEN target.has_js END,
@@ -198,7 +213,7 @@ SELECT target.id, target.type, target.label,
        CASE WHEN `+eligible+` THEN target.page_title END,
        CASE WHEN `+eligible+` THEN target.status_code END
 FROM target
-WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
+WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+excludeClause+`
 ORDER BY CASE WHEN `+eligible+` THEN target.has_js END DESC NULLS LAST,
          CASE WHEN `+eligible+` THEN target.content_length END DESC NULLS LAST,
          target.id
@@ -224,6 +239,28 @@ LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
 		out = append(out, asset)
 	}
 	return out, total, rows.Err()
+}
+
+// normalizeDomainSuffixes lowercases, trims, dedupes and canonicalizes domain
+// suffixes for ListUntestedAssetsWithSourcesExcluding. Both "aedev.feishu.cn"
+// and "*.aedev.feishu.cn" are accepted; the stored form has no leading dot or
+// wildcard so the SQL can compare "= sfx" for the bare host and the ".sfx" tail
+// for a subdomain of it.
+func normalizeDomainSuffixes(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		s := strings.ToLower(strings.TrimSpace(raw))
+		s = strings.TrimPrefix(s, "*.")
+		s = strings.TrimPrefix(s, ".")
+		s = strings.TrimSuffix(s, ".")
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // HostsByTaskWithSources resolves exact HTTP host candidates from assets that

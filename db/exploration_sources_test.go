@@ -396,6 +396,14 @@ func TestTaskAssetContextUsesDirectSourceScopeAndAnchors(t *testing.T) {
 	if total != 1 || len(untested) != 1 || untested[0].ID != sourceUntestedID {
 		t.Fatalf("combined untested assets: total=%d assets=%+v", total, untested)
 	}
+	// 所有测试域名都以 .invalid 结尾：排除该后缀后，未测集合应为空。
+	filtered, filteredTotal, err := assets.ListUntestedAssetsWithSourcesExcluding(current.ID, "", []string{".invalid"}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filteredTotal != 0 || len(filtered) != 0 {
+		t.Fatalf("excluded untested assets: total=%d assets=%+v", filteredTotal, filtered)
+	}
 	hosts, err := assets.HostsByTaskWithSources(current.ID)
 	if err != nil {
 		t.Fatal(err)

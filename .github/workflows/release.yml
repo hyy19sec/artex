@@ -27,8 +27,8 @@ jobs:
           name: web-dist
           path: web/out
 
-  # ② 双平台交叉编译（内嵌前端）+ 打 zip
-  # 发布只构建 linux/amd64 与 windows/amd64；macOS / arm64 如有需要可手动跑 build.sh。
+  # ② 交叉编译（内嵌前端）+ 打 zip
+  # 本次发布只构建 linux/amd64；Windows 暂不构建，恢复时把 windows 条目加回 matrix。
   binaries:
     needs: frontend
     runs-on: ubuntu-latest
@@ -36,7 +36,6 @@ jobs:
       matrix:
         include:
           - { goos: linux, goarch: amd64 }
-          - { goos: windows, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -132,6 +131,8 @@ jobs:
   #    镜像名取自当前仓库 ghcr.io/<owner>/<repo>，用内置 GITHUB_TOKEN 认证，
   #    无需配置任何 secret。
   docker:
+    # 本次发布暂不构建/推送镜像；恢复时删掉这一行。
+    if: false
     needs: binaries
     runs-on: ubuntu-latest
     steps:

@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-11-02
+
+### 变更
+
+- **`list_untested_assets` 支持排除域名后缀**：新增 `exclude_domain_suffixes` 参数（如 `["aedev.feishu.cn"]`），按 `domain` 本身或 `*.后缀` 排除已关闭的资产族，计数与分页使用同一过滤；内部 `target` CTE 增加 `domain` 列供过滤使用。
+
+### 构建与发布
+
+- **本次仅构建 linux/amd64**：v0.3.25 暂不构建 Windows 与 Docker 镜像；需要时再恢复。
+
 ## [0.3.24] - 2026-11-02
 
 ### 新增的功能
