@@ -31,6 +31,7 @@ import { api } from "@/lib/api";
 import type {
   AssetInterceptKind,
   AssetInterceptRule,
+  ConstraintScope,
   Finding,
   ModelTokenStat,
   Stats,
@@ -142,11 +143,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [constraints, setConstraints] = React.useState<TaskConstraint[]>([]);
   const [conText, setConText] = React.useState("");
   const [conKind, setConKind] = React.useState<TaskConstraint["kind"]>("deny");
+  const [conScope, setConScope] = React.useState<ConstraintScope>("operation");
   const [conBusy, setConBusy] = React.useState(false);
   const [conErr, setConErr] = React.useState("");
   const [editingConId, setEditingConId] = React.useState<string | null>(null);
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
+  const [editConScope, setEditConScope] = React.useState<ConstraintScope>("operation");
 
   const loadTokens = React.useCallback(async () => {
     try {
@@ -244,7 +247,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setConBusy(true);
     setConErr("");
     try {
-      await api.addConstraint(taskId, text, conKind);
+      await api.addConstraint(taskId, text, conKind, conScope);
       setConText("");
       await loadConstraints();
     } catch (e) {
@@ -258,12 +261,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setEditingConId(c.id);
     setEditConText(c.text);
     setEditConKind(c.kind);
+    setEditConScope(c.scope ?? "operation");
   };
 
   const cancelEditConstraint = () => {
     setEditingConId(null);
     setEditConText("");
     setEditConKind("deny");
+    setEditConScope("operation");
   };
 
   const saveEditConstraint = async (c: TaskConstraint) => {
@@ -272,7 +277,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setConBusy(true);
     setConErr("");
     try {
-      await api.updateConstraint(taskId, c.id, text, editConKind);
+      await api.updateConstraint(taskId, c.id, text, editConKind, editConScope);
       cancelEditConstraint();
       await loadConstraints();
     } catch (e) {
@@ -432,6 +437,42 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     },
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
   );
+  // 约束按 scope 分组展示：operation=授权边界，rating=评分参考，report=报告规则。
+  // superseded 是历史版本，默认隐藏，避免和当前约束混在一起。
+  const activeConstraints = constraints.filter((c) => c.status !== "superseded");
+  const supersededCount = constraints.length - activeConstraints.length;
+  const constraintGroups: { scope: ConstraintScope; title: string; hint: string }[] = [
+    {
+      scope: "operation",
+      title: "操作授权",
+      hint: "task_scope 内默认授权；只有明确列出的禁止/排除项才跳过。",
+    },
+    {
+      scope: "rating",
+      title: "定级口径",
+      hint: "评分参考，不是授权；[计入]/[不收取] 用于判定严重度和是否计入目标。",
+    },
+    {
+      scope: "report",
+      title: "报告规则",
+      hint: "只在报告/取证阶段生效，不限制探索意图。",
+    },
+  ];
+  const constraintLabel = (scope: ConstraintScope, kind: TaskConstraint["kind"]) => {
+    if (scope === "rating") return kind === "allow" ? "计入" : "不收取";
+    if (scope === "report") return "规则";
+    return kind === "allow" ? "允许" : "禁止";
+  };
+  const constraintBadgeClass = (scope: ConstraintScope, kind: TaskConstraint["kind"]) => {
+    if (scope === "rating")
+      return kind === "allow"
+        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+        : "bg-amber-500/15 text-amber-600 dark:text-amber-400";
+    if (scope === "report") return "bg-sky-500/15 text-sky-600 dark:text-sky-400";
+    return kind === "allow"
+      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+      : "bg-red-500/15 text-red-600 dark:text-red-400";
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -575,32 +616,45 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           )}
         </CardContent>
       </Card>
-      {/* 操作约束管理：allow=允许 / deny=禁止。约束会在下一轮规划时注入 planner/worker 的系统
-          提示以框定探索边界（注入范围可在 系统设置 里按 planner/worker 开关）。改动不即时打断，
-          下一轮规划自然读到。 */}
+      {/* 约束管理：operation=操作授权 / rating=定级口径 / report=报告规则。三者用途不同，
+          分开展示，避免把评级标准当成操作白名单。superseded 是历史版本，默认隐藏。 */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldAlertIcon className="size-4 text-amber-500" /> 操作约束
+            <ShieldAlertIcon className="size-4 text-amber-500" /> 约束管理
             <span className="text-muted-foreground text-xs font-normal">
-              （框定 planner/worker 的探索边界，共 {constraints.length} 条；改动下一轮规划生效）
+              （操作授权 / 定级口径 / 报告规则，共 {activeConstraints.length} 条
+              {supersededCount > 0 ? `，已隐藏 ${supersededCount} 条历史` : ""}；改动下一轮规划生效）
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3">
+        <CardContent className="flex flex-col gap-4">
           {/* 新增表单 */}
           <div className="flex flex-wrap items-center gap-2">
-            <NativeSelect
-              size="sm"
-              value={conKind}
-              onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
-            >
-              <NativeSelectOption value="deny">禁止</NativeSelectOption>
-              <NativeSelectOption value="allow">允许</NativeSelectOption>
+            <NativeSelect size="sm" value={conScope} onChange={(e) => setConScope(e.target.value as ConstraintScope)}>
+              <NativeSelectOption value="operation">操作授权</NativeSelectOption>
+              <NativeSelectOption value="rating">定级口径</NativeSelectOption>
+              <NativeSelectOption value="report">报告规则</NativeSelectOption>
             </NativeSelect>
+            {conScope !== "report" && (
+              <NativeSelect
+                size="sm"
+                value={conKind}
+                onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
+              >
+                <NativeSelectOption value="deny">{conScope === "rating" ? "不收取" : "禁止"}</NativeSelectOption>
+                <NativeSelectOption value="allow">{conScope === "rating" ? "计入" : "允许"}</NativeSelectOption>
+              </NativeSelect>
+            )}
             <Input
               className="h-7 min-w-56 flex-1 text-sm"
-              placeholder="一条操作约束，如『仅测当前端口，不扫其他端口』"
+              placeholder={
+                conScope === "rating"
+                  ? "一条评级条款，如『高危-1 获取服务级关键凭证』"
+                  : conScope === "report"
+                    ? "一条报告要求，如『必须附可复现的请求响应』"
+                    : "一条操作约束，如『仅测当前端口，不扫其他端口』"
+              }
               value={conText}
               onChange={(e) => setConText(e.target.value)}
               onKeyDown={(e) => {
@@ -618,89 +672,110 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </Button>
             {conErr && <span className="text-xs text-red-500">{conErr}</span>}
           </div>
-          {/* 约束列表 */}
-          {constraints.length > 0 ? (
-            <div className="flex flex-col gap-1.5">
-              {constraints.map((c) =>
-                editingConId === c.id ? (
-                  <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-                    <NativeSelect
-                      size="sm"
-                      value={editConKind}
-                      onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
-                    >
-                      <NativeSelectOption value="deny">禁止</NativeSelectOption>
-                      <NativeSelectOption value="allow">允许</NativeSelectOption>
-                    </NativeSelect>
-                    <Input
-                      className="h-7 min-w-56 flex-1 text-sm"
-                      value={editConText}
-                      onChange={(e) => setEditConText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void saveEditConstraint(c);
-                        if (e.key === "Escape") cancelEditConstraint();
-                      }}
-                      disabled={conBusy}
-                      autoFocus
-                    />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy || !editConText.trim()}
-                      onClick={() => void saveEditConstraint(c)}
-                    >
-                      <CheckIcon className="size-3.5 text-emerald-500" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={cancelEditConstraint}
-                    >
-                      <XIcon className="size-3.5" />
-                    </Button>
-                  </div>
+          {/* 分组列表 */}
+          {constraintGroups.map((group) => {
+            const items = activeConstraints.filter((c) => (c.scope ?? "operation") === group.scope);
+            return (
+              <div key={group.scope} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="text-sm font-medium">{group.title}</span>
+                  <span className="text-muted-foreground text-xs">{group.hint}</span>
+                </div>
+                {items.length === 0 ? (
+                  <p className="text-muted-foreground text-xs">暂无{group.title}。</p>
                 ) : (
-                  <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
-                        c.kind === "allow"
-                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                          : "bg-red-500/15 text-red-600 dark:text-red-400"
-                      }`}
-                    >
-                      {c.kind === "allow" ? "允许" : "禁止"}
-                    </span>
-                    <span className="min-w-0 flex-1 break-words">{c.text}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={() => startEditConstraint(c)}
-                    >
-                      <PencilIcon className="size-3.5" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 shrink-0 px-1.5"
-                      disabled={conBusy}
-                      onClick={() => void removeConstraint(c)}
-                    >
-                      <Trash2Icon className="size-3.5 text-red-500" />
-                    </Button>
-                  </div>
-                ),
-              )}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm">
-              暂无操作约束。建任务时会自动从描述/目标抽取；也可在此手动增删改，用来框定「允许/禁止做哪些操作」。
-            </p>
-          )}
+                  items.map((c) =>
+                    editingConId === c.id ? (
+                      <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+                        <NativeSelect
+                          size="sm"
+                          value={editConScope}
+                          onChange={(e) => setEditConScope(e.target.value as ConstraintScope)}
+                        >
+                          <NativeSelectOption value="operation">操作授权</NativeSelectOption>
+                          <NativeSelectOption value="rating">定级口径</NativeSelectOption>
+                          <NativeSelectOption value="report">报告规则</NativeSelectOption>
+                        </NativeSelect>
+                        {editConScope !== "report" && (
+                          <NativeSelect
+                            size="sm"
+                            value={editConKind}
+                            onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
+                          >
+                            <NativeSelectOption value="deny">
+                              {editConScope === "rating" ? "不收取" : "禁止"}
+                            </NativeSelectOption>
+                            <NativeSelectOption value="allow">
+                              {editConScope === "rating" ? "计入" : "允许"}
+                            </NativeSelectOption>
+                          </NativeSelect>
+                        )}
+                        <Input
+                          className="h-7 min-w-56 flex-1 text-sm"
+                          value={editConText}
+                          onChange={(e) => setEditConText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void saveEditConstraint(c);
+                            if (e.key === "Escape") cancelEditConstraint();
+                          }}
+                          disabled={conBusy}
+                          autoFocus
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={conBusy || !editConText.trim()}
+                          onClick={() => void saveEditConstraint(c)}
+                        >
+                          <CheckIcon className="size-3.5 text-emerald-500" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={conBusy}
+                          onClick={cancelEditConstraint}
+                        >
+                          <XIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${constraintBadgeClass(
+                            c.scope ?? "operation",
+                            c.kind,
+                          )}`}
+                        >
+                          {constraintLabel(c.scope ?? "operation", c.kind)}
+                        </span>
+                        <span className="min-w-0 flex-1 break-words">{c.text}</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={conBusy}
+                          onClick={() => startEditConstraint(c)}
+                        >
+                          <PencilIcon className="size-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 shrink-0 px-1.5"
+                          disabled={conBusy}
+                          onClick={() => void removeConstraint(c)}
+                        >
+                          <Trash2Icon className="size-3.5 text-red-500" />
+                        </Button>
+                      </div>
+                    ),
+                  )
+                )}
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
       <TaskInterceptRulesCard taskId={taskId} />

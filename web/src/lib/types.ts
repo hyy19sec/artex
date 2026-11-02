@@ -460,11 +460,15 @@ export interface TaskGoal {
 
 // 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。
 export type ConstraintKind = "allow" | "deny";
+export type ConstraintScope = "operation" | "rating" | "report";
 export interface TaskConstraint {
   id: string;
   kind: ConstraintKind;
+  scope?: ConstraintScope;
   text: string;
   origin?: string;
+  status?: "active" | "superseded";
+  supersedes_id?: string;
   ts?: string;
 }
 

@@ -496,8 +496,12 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()               // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
+	s.reseedGoalsStructuredPrompt()     // goals 提示词加入 scope/supersedes 结构化约束(一次性)
 	s.reseedMainAgentPrompt()           // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
 	s.reseedPlannerPrompt()             // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
+	s.reseedPlannerSeverityPrompt()     // planner 提示词:加入 finding severity / high+ 计数说明(一次性)
+	s.reseedPlannerQuotaPrompt()        // planner 提示词:加入 list_finding_quota 配额工具说明(一次性)
+	s.reseedPlannerDispatchPrompt()     // planner 提示词:硬底线改为 worker 利用率阈值(一次性)
 	s.reseedWorkerPrompt()              // worker 提示词:加否定结论证据门槛(一次性)
 	s.seedReporterAgent()               // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.reseedReporterPrompt()            // reporter 提示词加入签名/加密取证与 Python PoC 代理参数要求(一次性)
@@ -516,7 +520,7 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v10_list_untested_http_fields"
+	const flag = "tool_schema_refresh_v11_structured_constraints"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -534,7 +538,7 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	//     SeedTool 首插入only，旧库已 seed 的 schema 否则收不到这个新参数。
 	//   - list_facts：改为分页，新增 limit/before/q 入参；旧库已 seed 的空 schema 否则
 	//     在工具管理页显示「无参数」，模型也拿不到这几个参数说明。
-	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true, "list_untested_assets": true}
+	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true, "list_untested_assets": true, "set_constraints": true}
 	for _, sd := range agent.BuiltinToolSeeds() {
 		if !refreshBuiltin[sd.Key] {
 			continue
@@ -593,6 +597,33 @@ func (s *Server) reseedGoalsPrompt() {
 		return
 	}
 	log.Printf("[prompts] goals 提示词已追加新默认版本(加入抽操作约束步,一次性)")
+}
+
+// reseedGoalsStructuredPrompt 在 goals 提示词里加入 scope=operation/rating/report
+// 与 supersedes_id 的结构化约束说明，避免把整份评级标准塞进 operation allow。
+// 与 reseedGoalsPrompt 同构：新 flag 守卫、追加一版当前代码默认并切过去。
+func (s *Server) reseedGoalsStructuredPrompt() {
+	const flag = "goals_prompt_structured_constraints_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("goals")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["goals"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] goals 提示词重刷(结构化约束)失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] goals 提示词已追加新默认版本(加入 scope/supersedes 结构化约束,一次性)")
 }
 
 // reseedMainAgentPrompt 把 mainagent 提示词刷成【当前代码默认】——默认正文新增了「目标全部
@@ -654,6 +685,88 @@ func (s *Server) reseedPlannerPrompt() {
 		return
 	}
 	log.Printf("[prompts] planner 提示词已追加新默认版本(精简重构+克制降级去重+深度优先+否定复核上界,一次性)")
+}
+
+// reseedPlannerSeverityPrompt 在 planner 提示词里补上 graph_overview 的
+// finding_severity_counts / finding_high_plus_total 说明。与 reseedPlannerPrompt
+// 同构：新 flag 守卫、追加一版当前代码默认并切过去，旧版本仍保留在历史里。
+// 全新库由 seedPrompts 直接 seed 最新默认，无需此迁移。
+func (s *Server) reseedPlannerSeverityPrompt() {
+	const flag = "planner_prompt_finding_severity_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["planner"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] planner 提示词重刷(severity 计数)失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] planner 提示词已追加新默认版本(加入 finding severity / high+ 计数说明,一次性)")
+}
+
+// reseedPlannerQuotaPrompt 在 planner 提示词里加入 list_finding_quota 的配额说明，
+// 避免依赖 hint 里写死的“已报 N 个”。与 reseedPlannerPrompt 同构：新 flag 守卫、
+// 追加一版当前代码默认并切过去。
+func (s *Server) reseedPlannerQuotaPrompt() {
+	const flag = "planner_prompt_finding_quota_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["planner"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] planner 提示词重刷(quota 工具)失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] planner 提示词已追加新默认版本(加入 list_finding_quota 配额说明,一次性)")
+}
+
+// reseedPlannerDispatchPrompt 把 planner 硬底线从“running>0 即可 0 意图”改成
+// worker 利用率阈值：running 必须严格 >0.8×workers 才允许不补意图（8 workers → ≥7）。
+// 与 reseedPlannerPrompt 同构：新 flag 守卫、追加一版当前代码默认并切过去。
+func (s *Server) reseedPlannerDispatchPrompt() {
+	const flag = "planner_prompt_dispatch_threshold_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("planner")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["planner"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] planner 提示词重刷(dispatch threshold)失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] planner 提示词已追加新默认版本(硬底线改为 worker 利用率阈值,一次性)")
 }
 
 // reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论

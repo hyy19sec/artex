@@ -59,8 +59,9 @@ func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
 	defer s.engine.decInflight(t.ID)
 
 	var body struct {
-		Text string `json:"text"`
-		Kind string `json:"kind"`
+		Text  string `json:"text"`
+		Kind  string `json:"kind"`
+		Scope string `json:"scope"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid JSON")
@@ -76,12 +77,16 @@ func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "kind 必须是 allow 或 deny")
 		return
 	}
-	id, err := t.Store.AddConstraint(kind, text, "human")
+	scope := strings.TrimSpace(strings.ToLower(body.Scope))
+	if scope == "" {
+		scope = "operation"
+	}
+	id, err := t.Store.AddConstraint(kind, scope, text, "human", 0)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(id, 10), Kind: kind, Text: text, Origin: "human"})
+	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(id, 10), Kind: kind, Scope: scope, Text: text, Origin: "human", Status: "active"})
 }
 
 // editConstraint 人工修改一条约束(kind + text)。不通知 planner。
@@ -103,8 +108,9 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text string `json:"text"`
-		Kind string `json:"kind"`
+		Text  string `json:"text"`
+		Kind  string `json:"kind"`
+		Scope string `json:"scope"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid JSON")
@@ -120,11 +126,12 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "kind 必须是 allow 或 deny")
 		return
 	}
-	if err := t.Store.UpdateConstraint(cid, kind, text); err != nil {
-		writeErr(w, 500, err.Error())
+	scope := strings.TrimSpace(strings.ToLower(body.Scope))
+	if err := t.Store.UpdateConstraint(cid, kind, scope, text); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(cid, 10), Kind: kind, Text: text})
+	writeJSON(w, 200, ConstraintDTO{ID: strconv.FormatInt(cid, 10), Kind: kind, Scope: scope, Text: text})
 }
 
 // deleteConstraint 人工删除一条约束。不通知 planner。
@@ -165,13 +172,19 @@ func normalizeConstraintKind(k string) string {
 func constraintDTOs(in []db.Constraint) []ConstraintDTO {
 	out := make([]ConstraintDTO, 0, len(in))
 	for _, c := range in {
-		out = append(out, ConstraintDTO{
+		dto := ConstraintDTO{
 			ID:     strconv.FormatInt(c.ID, 10),
 			Kind:   c.Kind,
+			Scope:  c.Scope,
 			Text:   c.Text,
 			Origin: c.Origin,
+			Status: c.Status,
 			TS:     rfc3339(c.CreatedAt),
-		})
+		}
+		if c.SupersedesID != nil {
+			dto.SupersedesID = strconv.FormatInt(*c.SupersedesID, 10)
+		}
+		out = append(out, dto)
 	}
 	return out
 }

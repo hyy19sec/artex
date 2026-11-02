@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-02
+
+### 新增
+
+- **`graph_overview` 增加漏洞 severity 计数**：新增 `finding_severity_counts`（critical/high/medium/low）与 `finding_high_plus_total`（critical+high），数据源与任务列表一致（`findings` 表按 `task_id` 统计）；planner 可直接看到“高危及以上 19/50”这类进度，不再需要用 `list_findings` + Bash 自己数。planner 提示词同步加入字段说明，存量库通过 `planner_prompt_finding_severity_v1` 追加一版新默认。
+- **新增 `list_intents` 意图账本**：planner/mainagent 可按 state、summary/detail 关键词和 `before` 游标分页查看本任务及直接来源任务的意图，补 `graph_overview` 的 `recent_done_intents` 只有最近 12 条、而 `done_intents_total` 可达数百条的缺口。来源任务意图只读；完整内容仍用 `node_detail(id)`。
+- **`graph_overview` 增加全量计数**：新增 `intents_by_state`（如 exhausted 300 / done 44 / stopped 7 / blocked 1）与 `cold_digests_total`（窗口 15 条之外的 digest 总数）；planner 提示词把“完整态势”改为“蒸馏态势窗口”，并明确 `recent_*` 不是全量。
+- **新增 `list_finding_quota` 工具**：按 `findings.asset_ids` 关联 service 资产，统计每个 host:port 已报的 critical/high/medium/low/total，用于判断单主机配额，避免 hint 里写死“已报 12 个”。
+
+### 变更
+
+- **planner 硬底线改为 worker 利用率阈值**：`graph_overview` 新增 `workers`、`running_intents_count`、`dispatch_threshold`（严格 >0.8×workers；8 workers 时 threshold=7）、`must_dispatch`。目标未达成、`frontier_open=0` 且 `running_intents_count < dispatch_threshold` 时，本轮必须至少补一条新意图；`running ≥ threshold`、有排队意图或目标已达成时才允许不补。唯一例外是所有候选都被硬 operation deny / out-of-scope / closed_families 排除，此时必须逐条写明硬否决理由。存量库通过 `planner_prompt_dispatch_threshold_v1` 追加一版新默认。
+- **约束按 scope 拆分**：`task_constraints` 新增 `scope`（operation/rating/report）、`status`（active/superseded）、`supersedes_id`；`constraintBlock` 分开渲染“操作授权 / 定级口径 / 报告规则”，末尾改为“task_scope 内默认授权，只有明确禁止/排除项才跳过”。旧库的评级/报告类约束按文本前缀自动回填 scope。
+- **goals 输出结构化约束**：`set_constraints` 支持 `scope` 与 `supersedes_id`；goals 提示词要求 operation 只放操作边界，评级条款放 scope=rating（文件类只登记“定级依据：<路径>”），报告要求放 scope=report，不再把整份评级标准塞进 allow。存量库通过 `goals_prompt_structured_constraints_v1` 追加一版新默认。
+
+- **`list_facts` 的 `q` 同时搜索摘要和详情**：之前只搜 `payload->>'summary'`，detail-only 关键词会返回 0（如 `index.meta.json`、`t-g104`）。现在分页查询和 `total` 计数都使用 `summary OR detail`，实测 task 5：`index.meta.json` 0→8、`t-g104` 0→9、`cloudfunction` 2→36、`corehr` 4→16、`mail` 11→89。查询仍按 `exploration_id + kind` 索引只扫本任务及直接来源任务；详情命中时摘要可能不含关键词，需 `node_detail(id)` 看全文。
+
+### 修复
+
+- **`list_assets` 的 scope 重复计算**：`QueryDSLInScope` 改用物化的 `scopeTargetCTEMaterialized`，避免 `page_title` 等低命中过滤下，每个外层候选都重新计算一遍 target scope。实测 task 5 的 `page_title=管理 AND status_code==200 AND has_js==true` 从 301.7s 降到约 10.0s；`GetByIDsInScope` 保持原计划，避免为少量 id 白算整个 scope。
+
+### 构建与发布
+
+- **本次 GitHub Release 仅构建 linux/amd64**：不构建 Windows 产物与 Docker 镜像；需要其他目标时仍可手动 `build.sh --target`。
+
 ## [0.3.25] - 2026-11-02
 
 ### 变更

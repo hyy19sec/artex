@@ -246,11 +246,14 @@ func goalDTOs(in []*db.Node) []GoalDTO {
 
 // ConstraintDTO is one operation constraint (allow/deny) for the 总览「约束管理」UI.
 type ConstraintDTO struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"` // allow | deny
-	Text   string `json:"text"`
-	Origin string `json:"origin,omitempty"`
-	TS     string `json:"ts,omitempty"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`  // allow | deny
+	Scope        string `json:"scope"` // operation | rating | report
+	Text         string `json:"text"`
+	Origin       string `json:"origin,omitempty"`
+	Status       string `json:"status"`                  // active | superseded
+	SupersedesID string `json:"supersedes_id,omitempty"` // 被替代的旧约束 id
+	TS           string `json:"ts,omitempty"`
 }
 
 func taskNodeDTOs(in []*db.Node) []TaskNodeDTO {

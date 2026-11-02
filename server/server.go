@@ -196,6 +196,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// Frontier cap for planner add_intent. Read per call (not per task start), so
 		// changing the setting applies immediately to running tasks as well.
 		agent.MaxOpenIntents = m.MaxFrontierOpen
+		// Worker concurrency for graph_overview's dispatch threshold. Read per call
+		// so a settings change is visible to the next planner wake-up.
+		agent.WorkersCount = m.Workers
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)

@@ -404,11 +404,16 @@ export const api = {
       constraints: arr(response.constraints),
     })),
   // 新增约束（不通知 planner，下一轮规划自然读到）。
-  addConstraint: (id: string, text: string, kind: TaskConstraint["kind"]) =>
-    post<TaskConstraint>(`/tasks/${id}/constraints`, { text, kind }),
-  // 修改约束（文本 + allow/deny）。
-  updateConstraint: (id: string, constraintId: string, text: string, kind: TaskConstraint["kind"]) =>
-    patch<TaskConstraint>(`/tasks/${id}/constraints/${constraintId}`, { text, kind }),
+  addConstraint: (id: string, text: string, kind: TaskConstraint["kind"], scope?: TaskConstraint["scope"]) =>
+    post<TaskConstraint>(`/tasks/${id}/constraints`, { text, kind, scope }),
+  // 修改约束（文本 + allow/deny + operation/rating/report）。
+  updateConstraint: (
+    id: string,
+    constraintId: string,
+    text: string,
+    kind: TaskConstraint["kind"],
+    scope?: TaskConstraint["scope"],
+  ) => patch<TaskConstraint>(`/tasks/${id}/constraints/${constraintId}`, { text, kind, scope }),
   // 删除约束。
   deleteConstraint: (id: string, constraintId: string) =>
     del<{ ok: boolean }>(`/tasks/${id}/constraints/${constraintId}`),

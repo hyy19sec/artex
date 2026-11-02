@@ -762,15 +762,17 @@ ORDER BY id DESC LIMIT $4`, s.expID, kind, before, limit+1)
 	return nodes, hasMore, nil
 }
 
-// listByKindPageFiltered is ListByKindPage with an optional summary keyword
-// filter (payload->>'summary' ILIKE %q%). Fetches one extra row so the caller can
-// probe hasMore. Empty q = no filter. Newest-first by id.
+// listByKindPageFiltered is ListByKindPage with an optional keyword filter over
+// payload summary OR detail (ILIKE %q%). Matching detail is important: many facts
+// keep the searchable keyword only in their long detail body, so a summary-only
+// filter silently misses them. Fetches one extra row so the caller can probe
+// hasMore. Empty q = no filter. Newest-first by id.
 func (s *ExplorationStore) listByKindPageFiltered(kind string, before int64, limit int, q string) ([]*Node, error) {
 	where := `exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id < $3)`
 	args := []any{s.expID, kind, before}
 	if q != "" {
 		args = append(args, "%"+q+"%")
-		where += fmt.Sprintf(` AND payload->>'summary' ILIKE $%d`, len(args))
+		where += fmt.Sprintf(` AND (payload->>'summary' ILIKE $%d OR payload->>'detail' ILIKE $%d)`, len(args), len(args))
 	}
 	args = append(args, limit+1)
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
@@ -782,14 +784,14 @@ WHERE `+where+` ORDER BY id DESC LIMIT $`+fmt.Sprintf("%d", len(args)), args...)
 	return scanNodes(rows)
 }
 
-// countByKindFiltered counts nodes of a kind under the same summary filter, for a
-// page's total. Empty q = count all of that kind.
+// countByKindFiltered counts nodes of a kind under the same summary-or-detail
+// filter, for a page's total. Empty q = count all of that kind.
 func (s *ExplorationStore) countByKindFiltered(kind, q string) (int, error) {
 	where := `exploration_id=$1 AND kind=$2`
 	args := []any{s.expID, kind}
 	if q != "" {
 		args = append(args, "%"+q+"%")
-		where += fmt.Sprintf(` AND payload->>'summary' ILIKE $%d`, len(args))
+		where += fmt.Sprintf(` AND (payload->>'summary' ILIKE $%d OR payload->>'detail' ILIKE $%d)`, len(args), len(args))
 	}
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE `+where, args...).Scan(&n)
@@ -1316,6 +1318,25 @@ type GoalCounts struct{ Total, Met int }
 // FindingSeverityCounts breaks a task's findings down by severity for the task
 // list (severity 白名单外/为空的记录不计入任一档)。
 type FindingSeverityCounts struct{ Critical, High, Medium, Low int }
+
+// FindingSeverityCounts returns the current task's findings-table counts by
+// severity. It uses the same source and task filter as TaskListMetricsAll's
+// finding_metrics, so graph_overview shows exactly the 10/9/11/35 breakdown the
+// task list renders. Findings from source tasks are intentionally excluded,
+// matching the task list.
+func (s *ExplorationStore) FindingSeverityCounts() (FindingSeverityCounts, error) {
+	var c FindingSeverityCounts
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FILTER (WHERE f.severity='critical'),
+		       COUNT(*) FILTER (WHERE f.severity='high'),
+		       COUNT(*) FILTER (WHERE f.severity='medium'),
+		       COUNT(*) FILTER (WHERE f.severity='low')
+		FROM findings f
+		JOIN tasks t ON t.id = f.task_id
+		WHERE t.exploration_id = $1 AND t.deleted_at IS NULL`, s.expID).
+		Scan(&c.Critical, &c.High, &c.Medium, &c.Low)
+	return c, err
+}
 
 // TaskListMetrics contains the aggregates rendered in task lists.
 type TaskListMetrics struct {

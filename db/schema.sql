@@ -294,12 +294,39 @@ CREATE TABLE IF NOT EXISTS task_constraints (
     id             BIGSERIAL PRIMARY KEY,
     exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
     kind           TEXT NOT NULL CHECK (kind IN ('allow','deny')),
+    -- operation: 能/不能做哪些操作（授权边界）；
+    -- rating: 定级口径（评分参考，不是授权）；
+    -- report: 报告/取证要求（只在报告阶段生效）。
+    scope          TEXT NOT NULL DEFAULT 'operation',
     text           TEXT NOT NULL,
     origin         TEXT,
+    status         TEXT NOT NULL DEFAULT 'active',
+    supersedes_id  BIGINT REFERENCES task_constraints(id) ON DELETE SET NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'operation';
+ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS supersedes_id BIGINT REFERENCES task_constraints(id) ON DELETE SET NULL;
+-- 旧库回填：把误塞进 allow/deny 的定级条款和报告要求分到独立 scope。
+UPDATE task_constraints SET scope='rating'
+WHERE scope='operation' AND (
+    text LIKE '【敏感度%' OR text LIKE '【严重%' OR text LIKE '【高危%'
+    OR text LIKE '【中危%' OR text LIKE '【低危%' OR text LIKE '【忽略%'
+);
+UPDATE task_constraints SET scope='report'
+WHERE scope='operation' AND (
+    text LIKE '【报告%' OR text LIKE '【取证%' OR text LIKE '【PoC%'
+);
+ALTER TABLE task_constraints DROP CONSTRAINT IF EXISTS task_constraints_scope_check;
+ALTER TABLE task_constraints ADD CONSTRAINT task_constraints_scope_check
+    CHECK (scope IN ('operation','rating','report'));
+ALTER TABLE task_constraints DROP CONSTRAINT IF EXISTS task_constraints_status_check;
+ALTER TABLE task_constraints ADD CONSTRAINT task_constraints_status_check
+    CHECK (status IN ('active','superseded'));
 CREATE INDEX IF NOT EXISTS idx_task_constraints_exp ON task_constraints(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_task_constraints_active ON task_constraints(exploration_id, scope)
+    WHERE status='active';
 
 CREATE TABLE IF NOT EXISTS activity (
     id                 BIGSERIAL PRIMARY KEY,

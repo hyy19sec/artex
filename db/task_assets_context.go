@@ -90,6 +90,18 @@ target AS (
   JOIN context_tasks ctx ON ctx.task_id=ts.task_id
 )`
 
+// scopeTargetCTEMaterialized is scopeTargetCTE with both CTEs forced to
+// materialize. QueryDSLInScope uses it because a leading-wildcard filter such as
+// page_title ILIKE '%管理%' makes the planner badly underestimate the outer row
+// count; without MATERIALIZED it re-evaluates the whole target scope set for
+// every outer candidate (34 × 121k rows in one observed round), turning a
+// sub-second lookup into minutes. GetByIDsInScope keeps the non-materialized
+// form: its id list is tiny and a correlated lookup is cheaper there.
+var scopeTargetCTEMaterialized = strings.Replace(
+	strings.Replace(scopeTargetCTE, "context_tasks AS (", "context_tasks AS MATERIALIZED (", 1),
+	"target AS (", "target AS MATERIALIZED (", 1,
+)
+
 // ListTaskScopeWithSources returns the current task's scope followed by the
 // scopes of its direct source tasks. TaskScope.TaskID preserves provenance.
 func (s *AssetStore) ListTaskScopeWithSources(taskID int64) ([]TaskScope, error) {

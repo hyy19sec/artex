@@ -79,7 +79,7 @@ func TestWorkerReviewContextAcrossToolCalls(t *testing.T) {
 	probe := tool.Build(tool.Spec{Name: probeName, Schema: map[string]any{"type": "object"},
 		Run: func(context.Context, json.RawMessage, *tool.ToolContext) (tool.Result, error) {
 			executions++
-			_, err := ts.AddConstraint("deny", "禁止后续清理", "human")
+			_, err := ts.AddConstraint("deny", "operation", "禁止后续清理", "human", 0)
 			return tool.Text("Created a new fixture; no existing file overwritten."), err
 		},
 	})

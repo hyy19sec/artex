@@ -300,20 +300,21 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 任务目标：{{.Goal}}
 
 **本轮该产出几个意图（先想清楚这条）**：
-- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open 或 running 意图】（frontier_open=0 且 running_intents 为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。
-- 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
+- **硬底线（最高优先）**：只要【目标未达成】且【frontier_open=0】且【running_intents_count < dispatch_threshold】（即 running ≤ 0.8×workers；8 workers 时 running ≤6，必须补到 ≥7），本轮就【必须】产出至少一条（最多 4 条）向目标推进的新意图——有 worker 空闲、又没有排队方向时，产出 0 意图=流水线停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开或续派。仅当 running_intents_count ≥ dispatch_threshold、或 frontier_open>0（已有排队意图等 worker 领取）、或目标已达成时，本轮才可以不产出新意图。唯一例外：所有候选都被硬 operation deny / out-of-scope / closed_families 排除——此时可以 0 意图，但必须逐条写明每个候选被哪条硬规则否决。
+- 硬底线之外（must_dispatch=false），**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
 
 **每次唤醒的决策流程**：
 
-1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/recent_done 意图、sites_without_endpoints（无端点的站点，提示可能待探的方向）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）。
+1. **蒸馏态势窗口已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/recent_done 意图、intents_by_state（全量意图状态分布）、workers/running_intents_count/dispatch_threshold/must_dispatch（调度利用率：running 必须严格大于 0.8×workers 才允许不补意图；8 workers 时 threshold=7）、sites_without_endpoints（无端点的站点，提示可能待探的方向）、facts（探索事实数，与漏洞是两类）、findings_total（漏洞总数）、finding_severity_counts（critical/high/medium/low 计数）、finding_high_plus_total（critical+high，直接对应“高危及以上”目标）、recent_facts（{id,summary,confidence?}）、cold_digests_total（冷区摘要总数）。
+   - **窗口 ≠ 全量**：recent_done_intents 只显示最近 12 条，done_intents_total / intents_by_state 才是全量；recent_facts 最多 20 条（总数 facts）、finding_list 最多 10 条（总数 findings_total）、cold_digests 最多 15 条（总数 cold_digests_total）。确认旧方向是否做过时，用 list_intents / list_facts / list_findings 翻全量，旧摘要用 expand_digest，不要只看 recent_*。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/意图）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
-   - **要更深细节才按需调**：list_facts（分页，最新在前，默认 20，可 q 过滤、before 翻页，带 total/has_more）、list_findings（全部漏洞）、node_detail(id)（完整证据/详情；列表/recent_facts 只给摘要）、list_assets（pull：q 搜索、type/company_id/task_id 过滤、分页，或 id/ids 直取）、asset_neighbors。资产全局共享，别默认拉全量。
+   - **要更深细节才按需调**：list_intents（分页意图账本，state/q/before；补 recent_done 只有 12 条的缺口）、list_facts（分页，最新在前，默认 20，可 q 过滤 summary+detail、before 翻页，带 total/has_more）、list_findings（全部漏洞）、list_finding_quota（按 host:port 统计已报 critical/high/medium/low，用于配额判断，不要依赖 hint 里写死的计数）、node_detail(id)（完整证据/详情；列表/recent_facts 只给摘要）、list_assets（pull：q 搜索、type/company_id/task_id 过滤、分页，或 id/ids 直取）、asset_neighbors。资产全局共享，别默认拉全量。
 
 2. **判目标（核心职责）**：goals 字段已含目标与状态；对已被某发现/事实证明的未达成目标，调 prove_goal(goal_id, evidence_id, reason) 标 met。**当你标记的恰是最后一个未完成目标时，系统自动判定整个任务完成**——收官只由逐个 prove_goal 驱动，没有别的"一键完成"手段。
-   - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、findings_total 计数等）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图。
+   - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、finding_high_plus_total、finding_severity_counts 等）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。目标要求“高危及以上 N 个”时，只看 finding_high_plus_total，不要用 findings_total 代替。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图。
 
 3. **（可选，仅开局、极轻量）探测理解**：仅当图里几乎还没有 fact（recent_facts 基本为空、任务刚开始）、仅凭态势无法把初始意图说具体时，才用 Bash 等对目标做极少量、只读的探测（如 1–2 次 curl 看首页/指纹）。**唯一合法产物是一句更精准的意图描述**——绝不是漏洞的发现/验证/利用，也不是端点/目录/参数的枚举结果（那些是 worker 的活，写成意图派下去）。三条硬边界：
    - 图里已有 worker 产出的 fact（facts>0 / recent_facts 非空）→【禁止】再自己探测，一切判断基于已有 fact，本轮产物只能是"派新意图"或"结束"；想深挖某线索 → 派意图让 worker 去查，不是自己 curl。
@@ -326,7 +327,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
      · **done（正常跑完）**：已覆盖 → 不原样重派；是否死路看它 yields 出的 fact 结论、而非 state；仅出现【材料性新机理】（新事实/资产/参数/明显不同的打法）才重派，且 summary 写清与上次的不同；换措辞、"再试一次说不定行"不算，禁止重试。
      · **exhausted（预算耗尽、探到一半被掐断，只写回部分）/ blocked（模型或网络失败、基本没探成）**：都是中途没善终、信息不全——先用 get_worker_trace / get_worker_output 看它实际做到哪、卡在哪，再从下列里选：接近突破被预算掐 → 派"接上次进度继续"；纯外部故障没跑成（blocked 常是）→ 直接重派同方向；每次卡同一处 → 换打法/方向。依据永远是 trace 里的真实进度，不是 state 本身。
    - 完全无任何意图覆盖的全新方向 → 生成。
-   - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
+   - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、frontier_open=0 且 running_intents_count<dispatch_threshold、目标未达成 → 按顶部硬底线必须另开或续派。
    - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派意图把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
    - **有 JS 的页面优先测（has_js）**：资产 has_js=true 表示页面抓到了 JS 引用，通常存在前端接口/API，是优先测试面。用 list_assets("has_js==true AND status_code==200", type="service") 拉取，围绕这些资产派意图。没有 JS 的静态页、301/403/404 跳转页优先级放低（仍可作端口/服务存活线索）。
    - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
@@ -459,7 +460,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
 		}
 	}
-	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
+	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：目标尚未达成、frontier_open=0 且 running_intents_count < dispatch_threshold（8 workers 时 running ≤6）时，本轮必须产出至少一条新意图；仅当 running_intents_count ≥ dispatch_threshold（8 workers 时 ≥7）、frontier_open>0、或目标已达成时，才可以不产出；若所有候选都被硬 operation deny / out-of-scope / closed_families 排除，可 0 意图，但必须逐条写明每个候选被哪条硬规则否决。**" +
 		renderPlannerTodos(opts.Todos.List())
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。

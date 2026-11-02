@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -171,6 +172,23 @@ func maxOpenIntents() int {
 		return 0
 	}
 	return MaxOpenIntents()
+}
+
+// WorkersCount, if set, returns the configured worker concurrency for this
+// process (the same value the engine uses). graph_overview uses it to compute
+// the dispatch threshold: with N workers, the planner may leave the frontier
+// empty only while running intents > 0.8*N (strictly greater).
+var WorkersCount func() int
+
+func workersCount() int {
+	if WorkersCount == nil {
+		return 3
+	}
+	n := WorkersCount()
+	if n <= 0 {
+		return 3
+	}
+	return n
 }
 
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
@@ -369,10 +387,14 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// goals summary folded in so the planner needn't call list_goals each round.
 	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
 	gsum := make([]map[string]any, 0, len(goals))
+	goalUnmet := false
 	for _, g := range goals {
 		var p map[string]any
 		_ = json.Unmarshal(g.Payload, &p)
 		gsum = append(gsum, map[string]any{"id": g.ID, "state": g.State, "text": p["text"]})
+		if g.State != "met" {
+			goalUnmet = true
+		}
 	}
 	out["goals"] = gsum
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
@@ -438,11 +460,24 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	// 调度利用率：workers 个 worker 中，running 必须严格大于 0.8*workers，
+	// planner 才被允许不补新意图。8 workers → 需要 ≥7 个 running。
+	workers := workersCount()
+	dispatchThreshold := (workers*4)/5 + 1 // floor(0.8*workers)+1 = 严格大于 0.8
+	out["workers"] = workers
+	out["running_intents_count"] = len(running)
+	out["dispatch_threshold"] = dispatchThreshold
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
 	// 平行命名——后者只是它的最新窗口截断视图。两键并排即自描述："看到的是 N/总数"，
 	// 让 planner 去重时别把"没显示"当成"没派过"，无需在提示词里另行解释。
 	if dt, err := t.ts.CountFinishedIntents(); err == nil {
 		out["done_intents_total"] = dt
+	}
+	// intents_by_state：全量状态分布（例如 exhausted 300 / done 44 / stopped 7 / blocked 1）。
+	// recent_done_intents 只是最近一窗；planner 要判断"旧方向是否做过"时用它和
+	// list_intents 一起看，而不是只看 recent_done。
+	if sc, err := t.ts.IntentStateCounts(); err == nil {
+		out["intents_by_state"] = sc
 	}
 	// frontier_open：开放意图真实总数（open_intents 只是其中优先级最高的前 N 条截断视图）。
 	if fo, err := t.ts.CountOpenIntents(); err == nil {
@@ -450,6 +485,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	} else {
 		out["frontier_open"] = len(fr)
 	}
+	// must_dispatch：目标未达成 + 没有排队意图 + running 低于 80% 利用率时，
+	// 本轮必须补新意图（除非所有候选都被硬 operation deny/out-of-scope 排除）。
+	fo, _ := out["frontier_open"].(int)
+	out["must_dispatch"] = goalUnmet && fo == 0 && len(running) < dispatchThreshold
 	// frontier_limit / frontier_remaining：仅在配置了上限时出现，planner 据此在
 	// 积压时停止新增（add_intent 本身也会硬拒绝）。
 	if limit := maxOpenIntents(); limit > 0 {
@@ -472,6 +511,18 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
 	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
 	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
+	// 按 severity 的计数与任务列表同口径（findings 表按 task_id 统计）。planner
+	// 之前只能从 findings_total 和最新 10 条 finding_list 自己数，遇到 "50 个高危+"
+	// 这种量化目标时既慢又容易算错；直接给出分档和 high+ 总数。
+	if sc, err := t.ts.FindingSeverityCounts(); err == nil {
+		out["finding_severity_counts"] = map[string]int{
+			"critical": sc.Critical,
+			"high":     sc.High,
+			"medium":   sc.Medium,
+			"low":      sc.Low,
+		}
+		out["finding_high_plus_total"] = sc.Critical + sc.High
+	}
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
@@ -529,7 +580,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
 	if cds, more := coldDigestsRecent(t.ts, coldDigestsCap); len(cds) > 0 {
-		out["cold_digests"] = cds // [{id, body, member_count}] —— 直接读 body (§6.1)
+		out["cold_digests"] = cds                        // [{id, body, member_count}] —— 直接读 body (§6.1)
+		out["cold_digests_total"] = len(cds) + len(more) // 窗口外还有 len(more) 个，用 expand_digest(id) 展开
 		if len(more) > 0 {
 			out["cold_digests_more"] = more // 被截断的更旧 digest 的 id；用 expand_digest(id) 展开
 		}
@@ -967,11 +1019,11 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 const factsPageSize = 20
 
 func (t *ToolSet) listFacts() actool.CoreTool {
-	return t.readExpTool("list_facts", "分页列本任务及直接关联任务的【探索事实/结论】，最新在前(紧凑：id+摘要+状态，摘要过长会截断，全文用 node_detail(id))。参数均可选：limit(默认 20，上限 100)、before(游标，传上一页返回的 next_before 取更旧的一页；省略/0=最新一页)、q(按摘要关键词过滤)。返回 {facts, total, has_more, next_before}：total 是过滤后的总数，has_more=true 时用 next_before 继续翻页。关联任务条目带 source_task_id/inherited=true 且只读。漏洞看 list_findings。",
+	return t.readExpTool("list_facts", "分页列本任务及直接关联任务的【探索事实/结论】，最新在前(紧凑：id+摘要+状态，摘要过长会截断，全文用 node_detail(id))。参数均可选：limit(默认 20，上限 100)、before(游标，传上一页返回的 next_before 取更旧的一页；省略/0=最新一页)、q(按摘要或详情关键词过滤，不区分大小写；详情命中时返回的摘要可能不含关键词，用 node_detail(id) 看全文)。返回 {facts, total, has_more, next_before}：total 是过滤后的总数，has_more=true 时用 next_before 继续翻页。关联任务条目带 source_task_id/inherited=true 且只读。漏洞看 list_findings。",
 		obj(map[string]any{
 			"limit":  intp("返回条数，默认 20，上限 100"),
 			"before": intp("分页游标：只返回 id 小于该值的更旧事实；省略或 0 = 最新一页"),
-			"q":      str("按事实摘要关键词过滤（不区分大小写）；省略 = 不过滤"),
+			"q":      str("按事实摘要或详情关键词过滤（不区分大小写）；省略 = 不过滤"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -1001,6 +1053,141 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 			}
 			return jsonResult(res)
 		})
+}
+
+// listIntents is the full intent ledger that graph_overview cannot carry: the
+// overview only shows open (top 30), running, and the newest 12 finished intents,
+// while a long task can have hundreds of finished intents. It pages the local
+// exploration plus direct sources (source intents are read-only terminal ones),
+// filters by state and summary/detail keyword, and returns compact rows. Use
+// node_detail(id) for the full payload.
+func (t *ToolSet) listIntents() actool.CoreTool {
+	return t.readExpTool("list_intents",
+		"分页列本任务及直接关联任务的【意图账本】（id/state/summary/origin/created_at，紧凑）。用于补 graph_overview 的 recent_done_intents 只有 12 条的缺口：确认旧方向是否做过时先查这里，不要只看 recent_done。q 搜摘要或详情；state 可过滤 open/running/done/exhausted/blocked/stopped/paused/deleted；按 id 倒序，before 翻页。完整内容用 node_detail(id)。关联任务意图只读。",
+		obj(map[string]any{
+			"state":  str("按状态过滤（可选）：open/running/done/exhausted/blocked/stopped/paused/deleted；all 或留空 = 不过滤"),
+			"q":      str("按意图摘要或详情关键词过滤（不区分大小写）；省略 = 不过滤"),
+			"before": intp("分页游标：只返回 id 小于该值的更旧意图；省略或 0 = 最新一页"),
+			"limit":  intp("返回条数，默认 20，上限 100"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				State  string `json:"state"`
+				Q      string `json:"q"`
+				Before int64  `json:"before"`
+				Limit  int    `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			limit := a.Limit
+			if limit <= 0 {
+				limit = 20
+			}
+			if limit > 100 {
+				limit = 100
+			}
+			nodes, err := t.ts.ListByKindWithSources(db.KindIntent, 5000)
+			if err != nil {
+				return actool.Result{}, err
+			}
+			state := strings.TrimSpace(a.State)
+			q := strings.ToLower(strings.TrimSpace(a.Q))
+			filtered := make([]*db.Node, 0, len(nodes))
+			for _, n := range nodes {
+				if state != "" && state != "all" && n.State != state {
+					continue
+				}
+				if a.Before > 0 && n.ID >= a.Before {
+					continue
+				}
+				var p map[string]any
+				_ = json.Unmarshal(n.Payload, &p)
+				summary, _ := p["summary"].(string)
+				detail, _ := p["detail"].(string)
+				if q != "" && !strings.Contains(strings.ToLower(summary), q) && !strings.Contains(strings.ToLower(detail), q) {
+					continue
+				}
+				filtered = append(filtered, n)
+			}
+			sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID > filtered[j].ID })
+			total := len(filtered)
+			hasMore := total > limit
+			if hasMore {
+				filtered = filtered[:limit]
+			}
+			out := make([]map[string]any, 0, len(filtered))
+			for _, n := range filtered {
+				var p map[string]any
+				_ = json.Unmarshal(n.Payload, &p)
+				summary, _ := p["summary"].(string)
+				m := map[string]any{
+					"id":         n.ID,
+					"state":      n.State,
+					"summary":    capRunes(summary, factSummaryMax),
+					"origin":     n.Origin,
+					"created_at": n.CreatedAt,
+				}
+				if n.Inherited {
+					m["source_task_id"] = n.SourceTaskID
+					m["inherited"] = true
+				}
+				out = append(out, m)
+			}
+			res := map[string]any{"intents": out, "total": total, "has_more": hasMore}
+			if hasMore && len(filtered) > 0 {
+				res["next_before"] = filtered[len(filtered)-1].ID
+			}
+			return jsonResult(res)
+		})
+}
+
+// listFindingQuota reports per host:port reported-finding counts by severity. It
+// derives the host:port from findings.asset_ids → service assets, so the planner
+// can check quotas (e.g. high ≤8 / medium ≤4 / low ≤2) without trusting a
+// hand-written "已报 12 个" hint that goes stale after every report.
+func (t *ToolSet) listFindingQuota() actool.CoreTool {
+	return t.readExpTool("list_finding_quota",
+		"按本任务 findings 的 asset_ids 关联 service 资产，统计每个 host:port 已报漏洞的 severity 数量（critical/high/medium/low/total）。用于判断单主机配额（如高危≤8/中危≤4/低危≤2），不要再依赖 hint 里写死的“已报 12 个”。host 可按域名或 host:port 模糊过滤。",
+		obj(map[string]any{
+			"host":  str("按域名或 host:port 模糊过滤（可选）"),
+			"limit": intp("返回条数，默认 50，上限 200"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Host  string `json:"host"`
+				Limit int    `json:"limit"`
+			}
+			_ = json.Unmarshal(in, &a)
+			rows, err := t.ts.HostQuotaUsage(strings.TrimSpace(a.Host), a.Limit)
+			if err != nil {
+				return actool.Result{}, err
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for _, u := range rows {
+				out = append(out, map[string]any{
+					"host":      u.Host,
+					"port":      u.Port,
+					"critical":  u.Critical,
+					"high":      u.High,
+					"medium":    u.Medium,
+					"low":       u.Low,
+					"high_plus": u.Critical + u.High,
+					"total":     u.Total,
+				})
+			}
+			return jsonResult(map[string]any{
+				"hosts": out,
+				"note":  "计数来自 findings.asset_ids 关联的 service 资产；同一 finding 锚定多个 host:port 时会在每个 host:port 各计一次。",
+			})
+		})
+}
+
+// capRunes truncates s to at most n runes without splitting a UTF-8 sequence.
+func capRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // factSummaryMax caps a fact summary in list_facts output. Facts carry one-line
@@ -1587,8 +1774,10 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 }
 
 type constraintItem struct {
-	Text string `json:"text"`
-	Type string `json:"type"` // allow | deny
+	Text         string `json:"text"`
+	Type         string `json:"type"`          // allow | deny
+	Scope        string `json:"scope"`         // operation | rating | report
+	SupersedesID int64  `json:"supersedes_id"` // >0 = 新版本替代旧约束
 }
 
 // addOneConstraint 落一条操作约束到 task_constraints。origin 取 t.worker(缺省 system):
@@ -1605,7 +1794,7 @@ func (t *ToolSet) addOneConstraint(it constraintItem) (int64, error) {
 	if kind != "allow" && kind != "deny" {
 		return 0, fmt.Errorf("type 必须是 allow 或 deny")
 	}
-	return t.ts.AddConstraint(kind, text, t.worker)
+	return t.ts.AddConstraint(kind, strings.TrimSpace(it.Scope), text, t.worker, it.SupersedesID)
 }
 
 // setConstraints 给【本任务】新增操作约束(allow=允许做什么 / deny=禁止做什么)。既是目标
@@ -1613,14 +1802,26 @@ func (t *ToolSet) addOneConstraint(it constraintItem) (int64, error) {
 // 端改描述/schema、按 agent 绑定。约束会被注入 planner/worker 的系统提示以约束探索边界。
 func (t *ToolSet) setConstraints() actool.CoreTool {
 	return writeTool("set_constraints",
-		"给【本任务】新增操作约束,用来框定探索边界:type=allow(允许做的操作)或 deny(禁止做的操作)。\n"+
-			"约束=对『可以/不可以做哪些操作』的规定(如『仅测当前端口,不扫其他端口』『禁止对生产库做写操作』『只允许被动侦察』),不是目标、也不是攻击步骤。\n"+
-			"★优先批量:多条放进 constraints 数组一次提交,返回 ids 与之等长同序(失败项 id=0,详情见 errors)。单条则省略 constraints 直接给顶层 text/type。\n"+
-			"只登记任务目标/描述里【明确写出】的约束,不要臆造;拿不准类型时用 deny(更保守)。",
+		"给【本任务】新增约束。scope 区分三类：operation=能/不能做哪些操作（授权边界）；rating=定级口径（评分参考，不是授权）；report=报告/取证要求（只在报告阶段生效）。\n"+
+			"约束不是目标、也不是攻击步骤；只登记任务目标/描述里【明确写出】的内容，不要臆造。\n"+
+			"★不要把整份评级标准塞进 operation：评级条款用 scope=rating 逐条登记，或只登记一条「定级依据：<文件路径>」；报告要求用 scope=report。\n"+
+			"★优先批量：多条放进 constraints 数组一次提交，返回 ids 与之等长同序（失败项 id=0，详情见 errors）。单条则省略 constraints 直接给顶层 text/type/scope/supersedes_id。\n"+
+			"用 supersedes_id 替代旧约束：旧行会被标记 superseded，不再注入提示词。拿不准 type 时用 deny；拿不准 scope 时用 operation。",
 		obj(map[string]any{
-			"constraints": map[string]any{"type": "array", "description": "【优先用这个】要新增的约束数组,按顺序处理。每个元素:text(必填,一条约束)+ type(allow|deny)。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"text":        str("[单条] 一条操作约束的内容"),
-			"type":        str("[单条] allow(允许)或 deny(禁止);缺省按 deny 处理"),
+			"constraints": map[string]any{
+				"type":        "array",
+				"description": "【优先用这个】要新增的约束数组，按顺序处理。返回 ids 与本数组等长、同序。",
+				"items": obj(map[string]any{
+					"text":          str("约束内容"),
+					"type":          str("allow(允许)或 deny(禁止)"),
+					"scope":         str("operation|rating|report；缺省 operation"),
+					"supersedes_id": intp("可选：被替代的旧约束 id；旧行会被标记 superseded"),
+				}, "text"),
+			},
+			"text":          str("[单条] 一条约束的内容"),
+			"type":          str("[单条] allow(允许)或 deny(禁止);缺省按 deny 处理"),
+			"scope":         str("[单条] operation|rating|report；缺省 operation"),
+			"supersedes_id": intp("[单条] 可选：被替代的旧约束 id"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -2079,7 +2280,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	return []actool.CoreTool{
-		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
+		t.graphOverview(), t.listFindings(), t.listFacts(), t.listIntents(), t.listFindingQuota(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
