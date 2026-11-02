@@ -47,6 +47,67 @@ func (r *lddscanResult) fail(format string, a ...any) {
 	r.Errors = append(r.Errors, fmt.Sprintf(format, a...))
 }
 
+// lddscanBatchSize is the number of rows per transaction. It matches the ctx
+// cancellation check cadence: one advisory-lock acquisition and one commit per
+// batch instead of one per row.
+const lddscanBatchSize = 500
+
+// lddscanBatchItem is one queued upsert. done is called exactly once, with nil
+// when the row committed successfully.
+type lddscanBatchItem struct {
+	run  func(*db.AssetStore) error
+	done func(error)
+}
+
+// lddscanBatchWriter batches row upserts into one transaction. A single bad row
+// aborts the transaction, so the writer rolls back that batch and replays it
+// row by row; the rare failure path is slower but does not lose the other rows.
+type lddscanBatchWriter struct {
+	base  *db.AssetStore
+	items []lddscanBatchItem
+}
+
+func (w *lddscanBatchWriter) add(run func(*db.AssetStore) error, done func(error)) {
+	w.items = append(w.items, lddscanBatchItem{run: run, done: done})
+	if len(w.items) >= lddscanBatchSize {
+		w.flush()
+	}
+}
+
+func (w *lddscanBatchWriter) flush() {
+	if len(w.items) == 0 {
+		return
+	}
+	items := w.items
+	w.items = nil
+	batch, err := w.base.BeginBatch()
+	if err != nil {
+		for _, it := range items {
+			it.done(err)
+		}
+		return
+	}
+	for _, it := range items {
+		if err := it.run(batch.Store()); err != nil {
+			batch.Rollback()
+			for _, retry := range items {
+				retry.done(retry.run(w.base))
+			}
+			return
+		}
+	}
+	if err := batch.Commit(); err != nil {
+		batch.Rollback()
+		for _, it := range items {
+			it.done(err)
+		}
+		return
+	}
+	for _, it := range items {
+		it.done(nil)
+	}
+}
+
 // ---------- POST /api/sync/lddscan/import ----------
 
 func (s *Server) syncLddscanImport(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +185,8 @@ func (s *Server) lddscanTargets(ctx context.Context, f *excelize.File, as *db.As
 
 	byCompany := map[string][]string{}
 	var order []string
+	w := &lddscanBatchWriter{base: as}
+	defer w.flush()
 	n := 0
 	for rows.Next() {
 		if n++; n%lddscanCtxEvery == 0 {
@@ -139,21 +202,32 @@ func (s *Server) lddscanTargets(ctx context.Context, f *excelize.File, as *db.As
 		if target == "" {
 			continue
 		}
-		if _, err := as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: target}); err != nil {
-			res.fail("root_domain %s: %v", target, err)
-			continue
-		}
-		res.Synced["root_domain"]++
-		if comp := cell(row, cols, "company"); comp != "" {
-			if _, ok := byCompany[comp]; !ok {
-				order = append(order, comp)
-			}
-			byCompany[comp] = append(byCompany[comp], target)
-		}
+		comp := cell(row, cols, "company")
+		w.add(
+			func(scoped *db.AssetStore) error {
+				_, err := scoped.UpsertRootDomain(db.UpsertRootDomainReq{Domain: target})
+				return err
+			},
+			func(err error) {
+				if err != nil {
+					res.fail("root_domain %s: %v", target, err)
+					return
+				}
+				res.Synced["root_domain"]++
+				if comp == "" {
+					return
+				}
+				if _, ok := byCompany[comp]; !ok {
+					order = append(order, comp)
+				}
+				byCompany[comp] = append(byCompany[comp], target)
+			},
+		)
 	}
 	if err := rows.Error(); err != nil {
 		return err
 	}
+	w.flush() // 先落完这一 sheet，再按成功列出的公司建范围
 
 	for _, comp := range order {
 		cid, err := cs.UpsertByName(comp)
@@ -181,6 +255,8 @@ func (s *Server) lddscanDNS(ctx context.Context, f *excelize.File, as *db.AssetS
 	defer rows.Close()
 
 	n := 0
+	w := &lddscanBatchWriter{base: as}
+	defer w.flush()
 	for rows.Next() {
 		if n++; n%lddscanCtxEvery == 0 {
 			if err := ctx.Err(); err != nil {
@@ -196,25 +272,42 @@ func (s *Server) lddscanDNS(ctx context.Context, f *excelize.File, as *db.AssetS
 			continue
 		}
 		if ips := parsePyList(cell(row, cols, "a")); len(ips) > 0 {
-			if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: domain, RecordType: "A", RecordValue: ips}); err != nil {
-				res.fail("subdomain %s: %v", domain, err)
-			} else {
-				res.Synced["subdomain"]++
-				for _, ip := range ips {
-					if net.ParseIP(ip) != nil {
-						res.Synced["ip"]++
+			w.add(
+				func(scoped *db.AssetStore) error {
+					_, err := scoped.UpsertSubdomain(db.UpsertSubdomainReq{Domain: domain, RecordType: "A", RecordValue: ips})
+					return err
+				},
+				func(err error) {
+					if err != nil {
+						res.fail("subdomain %s: %v", domain, err)
+						return
 					}
-				}
-			}
+					res.Synced["subdomain"]++
+					for _, ip := range ips {
+						if net.ParseIP(ip) != nil {
+							res.Synced["ip"]++
+						}
+					}
+				},
+			)
 		}
 		if cn := cell(row, cols, "cname"); cn != "" {
-			if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: domain, RecordType: "CNAME", RecordValue: []string{cn}}); err != nil {
-				res.fail("subdomain %s(CNAME): %v", domain, err)
-			} else {
-				res.Synced["subdomain"]++
-			}
+			w.add(
+				func(scoped *db.AssetStore) error {
+					_, err := scoped.UpsertSubdomain(db.UpsertSubdomainReq{Domain: domain, RecordType: "CNAME", RecordValue: []string{cn}})
+					return err
+				},
+				func(err error) {
+					if err != nil {
+						res.fail("subdomain %s(CNAME): %v", domain, err)
+						return
+					}
+					res.Synced["subdomain"]++
+				},
+			)
 		}
 	}
+	w.flush()
 	return rows.Error()
 }
 
@@ -254,6 +347,8 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 	n := 0
 	skippedCertErr := 0
 	skippedNoStatus := 0
+	w := &lddscanBatchWriter{base: as}
+	defer w.flush()
 	for rows.Next() {
 		if n++; n%lddscanCtxEvery == 0 {
 			if err := ctx.Err(); err != nil {
@@ -301,15 +396,24 @@ func (s *Server) lddscanHTTP(ctx context.Context, f *excelize.File, as *db.Asset
 			hasJS := false
 			req.HasJS = &hasJS
 		}
-		if _, err := as.UpsertHTTPService(req); err != nil {
-			res.fail("service %s: %v", url, err)
-			continue
-		}
-		res.Synced["service"]++
+		w.add(
+			func(scoped *db.AssetStore) error {
+				_, err := scoped.UpsertHTTPService(req)
+				return err
+			},
+			func(err error) {
+				if err != nil {
+					res.fail("service %s: %v", url, err)
+					return
+				}
+				res.Synced["service"]++
+			},
+		)
 	}
 	if err := rows.Error(); err != nil {
 		return err
 	}
+	w.flush()
 	if skippedCertErr > 0 {
 		res.warn("已跳过 cert_ERROR=误报 的 HTTP 记录: %d 条", skippedCertErr)
 	}

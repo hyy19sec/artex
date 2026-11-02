@@ -94,19 +94,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_service_other
 CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_endpoint     ON assets(url, method) WHERE type = 'endpoint';
 CREATE INDEX IF NOT EXISTS idx_av2_company      ON assets(company_id)       WHERE company_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_av2_company_type ON assets(company_id, type) WHERE company_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_av2_task_ids     ON assets USING GIN(task_ids);
 CREATE INDEX IF NOT EXISTS idx_av2_domain       ON assets(domain)      WHERE domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_av2_root_domain  ON assets(root_domain) WHERE root_domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_av2_ip           ON assets(ip)          WHERE ip IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_av2_c_segment    ON assets USING GIST(c_segment inet_ops) WHERE c_segment IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_av2_technologies ON assets USING GIN(technologies) WHERE type = 'service';
 -- lddscan crawl_flag → has_js（存量库迁移；新库由上面的 CREATE TABLE 直接带上）
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS has_js BOOLEAN;
 CREATE INDEX IF NOT EXISTS idx_av2_has_js ON assets(has_js) WHERE type = 'service' AND service_type = 'http';
-CREATE INDEX IF NOT EXISTS idx_av2_bound_domains ON assets USING GIN(bound_domains) WHERE type = 'ip';
-CREATE INDEX IF NOT EXISTS idx_av2_open_ports   ON assets USING GIN(open_ports)    WHERE type = 'ip';
 CREATE INDEX IF NOT EXISTS idx_av2_last_seen    ON assets(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_av2_type_seen    ON assets(type, last_seen DESC);
+-- 下面几张索引在现网 0 次扫描，且现有查询模式（unnest/ILIKE、= ANY）无法使用它们；
+-- 保留只会放大每次资产 upsert 的写放大，故删除（存量库同样生效）。
+DROP INDEX IF EXISTS idx_av2_task_ids;
+DROP INDEX IF EXISTS idx_av2_c_segment;
+DROP INDEX IF EXISTS idx_av2_technologies;
+DROP INDEX IF EXISTS idx_av2_bound_domains;
+DROP INDEX IF EXISTS idx_av2_open_ports;
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_source TEXT;
 UPDATE assets SET company_source = 'explicit' WHERE company_source IS NULL;
 ALTER TABLE assets ALTER COLUMN company_source SET DEFAULT 'explicit';
@@ -715,8 +717,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_assets_task_links ON assets;
-CREATE TRIGGER trg_assets_task_links AFTER INSERT OR UPDATE OF task_ids ON assets
-    FOR EACH ROW EXECUTE FUNCTION sync_task_asset_links();
+DROP TRIGGER IF EXISTS trg_assets_task_links_ins ON assets;
+DROP TRIGGER IF EXISTS trg_assets_task_links_upd ON assets;
+-- task_ids 没有真正变化时不要触发：lddscan 等批量导入的 task_ids 始终为空，
+-- 每次 upsert 都跑一遍 INSERT/DELETE 只会制造 task_asset_links 的膨胀。
+-- 拆成 INSERT / UPDATE 两个触发器：INSERT 的 WHEN 不能引用 OLD。
+CREATE TRIGGER trg_assets_task_links_ins AFTER INSERT ON assets
+    FOR EACH ROW
+    WHEN (cardinality(NEW.task_ids) > 0)
+    EXECUTE FUNCTION sync_task_asset_links();
+CREATE TRIGGER trg_assets_task_links_upd AFTER UPDATE OF task_ids ON assets
+    FOR EACH ROW
+    WHEN (OLD.task_ids IS DISTINCT FROM NEW.task_ids)
+    EXECUTE FUNCTION sync_task_asset_links();
 
 -- Existing installations receive an auditable legacy source without rewriting
 -- task_ids. Ignore stale array ids that no longer resolve to a live task.

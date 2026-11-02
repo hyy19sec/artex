@@ -40,14 +40,14 @@ type Asset struct {
 	AppDescription string `json:"app_description,omitempty"`
 	AppICP         string `json:"app_icp,omitempty"`
 	// service fields
-	URL           string           `json:"url,omitempty"`
-	ServiceType   string           `json:"service_type,omitempty"`
-	ServiceName   string           `json:"service_name,omitempty"`
-	FaviconMMH3   string           `json:"favicon_mmh3,omitempty"`
-	StatusCode    *int             `json:"status_code,omitempty"`
-	ContentLength *int64           `json:"content_length,omitempty"`
-	PageTitle     string           `json:"page_title,omitempty"`
-	Technologies  []string         `json:"technologies,omitempty"`
+	URL           string   `json:"url,omitempty"`
+	ServiceType   string   `json:"service_type,omitempty"`
+	ServiceName   string   `json:"service_name,omitempty"`
+	FaviconMMH3   string   `json:"favicon_mmh3,omitempty"`
+	StatusCode    *int     `json:"status_code,omitempty"`
+	ContentLength *int64   `json:"content_length,omitempty"`
+	PageTitle     string   `json:"page_title,omitempty"`
+	Technologies  []string `json:"technologies,omitempty"`
 	// HasJS mirrors lddscan's crawl_flag: the page was crawled with JS refs
 	// (asset_refs non-empty), i.e. it very likely has frontend/API surface.
 	HasJS *bool            `json:"has_js,omitempty"`
@@ -126,6 +126,43 @@ func (s *AssetStore) withCompanyScopeMutation(fn func(*AssetStore) (int64, error
 	}
 	return id, nil
 }
+
+// AssetBatch groups many asset upserts into one transaction. Bulk importers use
+// it to pay the company-scope mutation lock and the commit/fsync cost once per
+// batch instead of once per row. Nested side effects (root_domain/subdomain/IP)
+// reuse the batch's transaction through Store().
+type AssetBatch struct {
+	store *AssetStore
+	tx    *sql.Tx
+}
+
+// BeginBatch starts a transaction and takes the same company-scope mutation
+// lock as a single upsert. Call Store().Upsert* for every row, then Commit or
+// Rollback. A failed row aborts the transaction, so callers that need per-row
+// error isolation should roll back and retry the batch row by row.
+func (s *AssetStore) BeginBatch() (*AssetBatch, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("asset store unavailable")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	if err := lockCompanyScopeMutation(tx); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return &AssetBatch{tx: tx, store: &AssetStore{db: s.db, company: s.company, tx: tx}}, nil
+}
+
+// Store returns the transaction-scoped asset store used for this batch.
+func (b *AssetBatch) Store() *AssetStore { return b.store }
+
+// Commit commits every upsert made through Store().
+func (b *AssetBatch) Commit() error { return b.tx.Commit() }
+
+// Rollback discards the batch. Safe to call after Commit (the close is a no-op).
+func (b *AssetBatch) Rollback() { _ = b.tx.Rollback() }
 
 func (s *AssetStore) resolveCompanyWithICP(rootDomain, ipStr, icp string) (*int64, error) {
 	if s.tx != nil {
@@ -297,9 +334,9 @@ ON CONFLICT (domain) WHERE type = 'root_domain' DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
+    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
     extra      = assets.extra || EXCLUDED.extra,
-    last_seen  = now()
+    last_seen  = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`, domain, icpVal, companyID, taskIDs).Scan(&id)
 	return id, err
 }
@@ -398,8 +435,8 @@ ON CONFLICT (ip) WHERE type = 'ip' DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
-    last_seen  = now()
+    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
+    last_seen  = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`, req.IP, csegVal, boundDomains, openPortsJSON, companyID, taskIDs).Scan(&id)
 	return id, err
 }
@@ -420,7 +457,7 @@ UPDATE assets SET
                      CASE WHEN elem->>'service' IS NOT NULL AND elem->>'service' <> '' THEN 0 ELSE 1 END
         )
     ),
-    last_seen = now()
+    last_seen = CASE WHEN last_seen < now() - interval '1 hour' THEN now() ELSE last_seen END
 WHERE type = 'ip' AND ip = $2`, string(entry), ipStr)
 	return err
 }
@@ -433,7 +470,7 @@ func (s *AssetStore) AppendIPBoundDomain(ipStr, domain string) error {
 	_, err := s.db.Exec(`
 UPDATE assets SET
     bound_domains = (SELECT ARRAY(SELECT DISTINCT unnest(bound_domains || ARRAY[$1::text]))),
-    last_seen = now()
+    last_seen = CASE WHEN last_seen < now() - interval '1 hour' THEN now() ELSE last_seen END
 WHERE type = 'ip' AND ip = $2`, domain, ipStr)
 	return err
 }
@@ -544,10 +581,10 @@ ON CONFLICT (domain, COALESCE(record_type,'')) WHERE type = 'subdomain' DO UPDAT
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    task_ids     = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
+    task_ids     = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
     record_value = (SELECT ARRAY(SELECT DISTINCT unnest(assets.record_value || EXCLUDED.record_value))),
     extra        = assets.extra || EXCLUDED.extra,
-    last_seen    = now()
+    last_seen    = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`, domain, rootDomain, recordType, recordValueArr, ipVal, csegVal, icpVal, companyID, taskIDs).Scan(&id)
 	return id, err
 }
@@ -635,8 +672,8 @@ ON CONFLICT (bundle_id) WHERE type = 'app' AND bundle_id IS NOT NULL DO UPDATE S
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    task_ids        = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
-    last_seen       = now()
+    task_ids        = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
+    last_seen       = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`, bundleVal, req.Name, catVal, descVal, icpVal, companyIDVal, companySource, taskIDs).Scan(&id)
 	} else {
 		err = s.tx.QueryRow(`
@@ -657,8 +694,8 @@ ON CONFLICT (app_name) WHERE type = 'app' AND bundle_id IS NULL DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    task_ids        = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
-    last_seen       = now()
+    task_ids        = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
+    last_seen       = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`, req.Name, catVal, descVal, icpVal, companyIDVal, companySource, taskIDs).Scan(&id)
 	}
 	return id, err
@@ -670,8 +707,8 @@ RETURNING id`, req.Name, catVal, descVal, icpVal, companyIDVal, companySource, t
 
 // UpsertHTTPServiceReq is the input for UpsertHTTPService.
 type UpsertHTTPServiceReq struct {
-	URL           string
-	Technologies  []string
+	URL          string
+	Technologies []string
 	// HasJS is lddscan's crawl_flag mapped to a boolean: true = the page was
 	// crawled with JS refs (asset_refs non-empty). nil = unknown / not provided.
 	HasJS         *bool
@@ -768,7 +805,7 @@ ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
             FROM unnest(assets.auth || EXCLUDED.auth) AS elem
         )
     ),
-    task_ids       = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
+    task_ids       = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
     company_id     = CASE
         WHEN assets.company_source = 'explicit' AND assets.company_id IS NOT NULL THEN assets.company_id
         ELSE COALESCE(EXCLUDED.company_id, assets.company_id)
@@ -778,7 +815,7 @@ ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    last_seen      = now()
+    last_seen      = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`,
 		normURL, serviceName, domainVal, ipVal, nullableInt(port), rootDomain,
 		csegVal, faviconVal, techsArr, req.HasJS, req.StatusCode, req.ContentLength, titleVal,
@@ -904,7 +941,7 @@ ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE typ
             FROM unnest(assets.auth || EXCLUDED.auth) AS elem
         )
     ),
-    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
+    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
     company_id = CASE
         WHEN assets.company_source = 'explicit' AND assets.company_id IS NOT NULL THEN assets.company_id
         ELSE COALESCE(EXCLUDED.company_id, assets.company_id)
@@ -914,7 +951,7 @@ ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE typ
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    last_seen  = now()
+    last_seen  = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`,
 		serviceName, domainVal, ipVal, req.Port, rootDomainVal,
 		csegVal, authJSON, companyID, taskIDs,
@@ -1039,7 +1076,7 @@ ON CONFLICT (url, method) WHERE type = 'endpoint' DO UPDATE SET
     ),
     ip         = COALESCE(EXCLUDED.ip,        assets.ip),
     c_segment  = COALESCE(EXCLUDED.c_segment, assets.c_segment),
-    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
+    task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids) ORDER BY 1)),
     company_id = CASE
         WHEN assets.company_source = 'explicit' AND assets.company_id IS NOT NULL THEN assets.company_id
         ELSE COALESCE(EXCLUDED.company_id, assets.company_id)
@@ -1049,7 +1086,7 @@ ON CONFLICT (url, method) WHERE type = 'endpoint' DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
-    last_seen  = now()
+    last_seen  = CASE WHEN assets.last_seen < now() - interval '1 hour' THEN now() ELSE assets.last_seen END
 RETURNING id`,
 		normURL, method, domainVal, ipVal, nullableInt(port), rootDomainVal,
 		paramsJSON, companyID, taskIDs, csegVal,
