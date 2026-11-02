@@ -10,15 +10,16 @@ import (
 
 const findingIDGuidance = "\n\n**漏洞编号约定**：finding_id 是独立漏洞记录 ID；finding_node_id 是探索节点 ID。list_findings / list_task_findings / node_detail / get_task_node_detail 的 id 保留为探索节点 ID，应从同一返回的 finding_id 读取独立编号。get_finding_traffic / bind_finding_traffic 用独立 finding_id。旧 update_finding_report 的 finding_id 参数仍传 finding_node_id。不要把 report_finding 第一行的数字用于证据工具，也不要遇到编号错误后猜测其他数字。"
 
-const findingSigningGuidance = "\n\n**签名/加密类漏洞取证要求**：若漏洞涉及请求签名、加密、防重放或动态 token，report_finding 的 evidence 必须包含：(1) 具体 JS 文件 URL/路径（有 hash 更佳）与关键函数/代码片段；(2) 算法与参数规则（参数排序、编码、时间戳/nonce）；(3) key/iv/salt/公钥的具体来源（硬编码位置、接口下发、本地存储字段等）；(4) 受影响接口的 method + path；(5) 可直接运行的 Python 复现脚本或脚本文件路径。无法定位时写明已检查范围和“未定位”，禁止猜测 key 或编造脚本。\n\n**Python PoC 代理参数要求**：凡是给出可直接运行的 Python 复现脚本（包括签名/加密类漏洞的脚本），脚本都必须提供 `-p/--proxy` 参数（值为 `http://host:port`、`https://host:port` 或 `socks5h://host:port`；缺省为空表示直连），并让所有 HTTP 请求都走该代理（`requests` 用 `proxies=`；SOCKS5 需在依赖中注明 `requests[socks]`）。同时要在 evidence/报告里给出带 `-p` 的运行示例，例如 `python poc.py -p http://127.0.0.1:8080`，便于复现者按自己的代理环境验证。"
+const findingSigningGuidance = "\n\n**签名/加密类漏洞取证要求**：若漏洞涉及请求签名、加密、防重放或动态 token，report_finding 的 evidence 必须包含：(1) 具体 JS 文件 URL/路径（有 hash 更佳）与关键函数/代码片段；(2) 算法与参数规则（参数排序、编码、时间戳/nonce）；(3) key/iv/salt/公钥的具体来源（硬编码位置、接口下发、本地存储字段等）；(4) 受影响接口的 method + path；(5) 可直接运行的 Python 复现脚本或脚本文件路径。无法定位时写明已检查范围和“未定位”，禁止猜测 key 或编造脚本。\n\n**Python PoC 代理与证书要求**：凡是给出可直接运行的 Python 复现脚本（包括签名/加密类漏洞的脚本），脚本都必须提供 `-p/--proxy` 参数（值为 `http://host:port`、`https://host:port` 或 `socks5h://host:port`；缺省为空表示直连），并让所有 HTTP 请求都走该代理（`requests` 用 `proxies=`；SOCKS5 需在依赖中注明 `requests[socks]`）。所有 HTTPS 请求必须使用 `verify=False` 关闭证书校验（`requests` 传 `verify=False`；建议同时 `urllib3.disable_warnings(InsecureRequestWarning)`），以兼容自签名证书和记录代理重签证书。同时要在 evidence/报告里给出带 `-p` 的运行示例，例如 `python poc.py -p http://127.0.0.1:8080`，便于复现者按自己的代理环境验证。"
 
-// signingGuidanceFor returns the signing/encryption evidence contract for any
-// agent that can record or write a finding report. It is code-owned (not seeded),
-// so existing DBs get it without a prompt reseed and it cannot be edited away.
+// signingGuidanceFor returns the signing/encryption evidence contract only for
+// agents that write the finding REPORT (update_finding_report). Recording a
+// finding (report_finding) only needs the raw PoC/evidence; the deep JS/key
+// reconstruction belongs to the reporter. It is code-owned (not seeded), so
+// existing DBs get it without a prompt reseed and it cannot be edited away.
 func signingGuidanceFor(tools []actool.CoreTool) string {
 	for _, tool := range tools {
-		switch tool.Name() {
-		case "report_finding", "update_finding_report":
+		if tool.Name() == "update_finding_report" {
 			return findingSigningGuidance
 		}
 	}
@@ -91,7 +92,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 	if has["update_finding_report"] && has["bind_finding_traffic"] && has["get_finding_traffic"] {
 		guidance += "\n\n**报告前自动关联流量（已开启）**：你负责为本次触发的漏洞核对并绑定流量，再撰写报告。先从 report_finding 返回 JSON 或 get_task_node_detail / list_task_findings 取得明确的 finding_id 与 finding_node_id。读取漏洞详情、对应意图的执行记录及已有证据清单，优先使用上报者交接的真实 ID。若本次验证为 HTTP 且流量工具可用，用 traffic_search 筛选候选，再用 traffic_get 逐条核实请求/响应确实支持该漏洞；域名和时间只用于筛选，不证明归属。将确认的证据按复现顺序用 bind_finding_traffic(finding_id, traffic_refs) 关联，选择 baseline / proof / verification / supporting 并说明用途。只能操作本次漏洞，不重复创建漏洞或重新探测目标。绑定成功后重新调用 get_finding_traffic 获取最新 version，读取所需正文，再将实际读取的 version 作为 evidence_version 传给 update_finding_report（其 finding_id 参数仍用 finding_node_id）。已有绑定不必重复追加。TCP、未采集、工具不可用或没有确切匹配时，跳过自动绑定，依据文字/命令证据正常写报告并说明原因，不得为凑齐流量而猜测。绑定失败不宣称成功；保留已有证据并在报告说明未绑定原因。"
 	}
-	if has["report_finding"] || has["update_finding_report"] {
+	if has["update_finding_report"] {
 		guidance += findingSigningGuidance
 	}
 	if guidance != "" || has["get_finding_traffic"] || has["update_finding_report"] {

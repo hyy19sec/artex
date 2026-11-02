@@ -4,11 +4,7 @@
 
 ## [Unreleased]
 
-### 构建与发布
-
-- **发布产物精简为 linux/amd64 与 windows/amd64**：`build.sh --release` 与 release workflow 不再默认构建 macOS 与 linux/arm64；Docker 镜像也改为仅 linux/amd64。需要其他目标时仍可传 `--target` / `ARTEX_TARGETS` 手动构建。
-
-## [0.3.24] - 2026-10-26
+## [0.3.24] - 2026-11-02
 
 ### 新增的功能
 
@@ -17,14 +13,19 @@
 
 ### 变更
 
+- **签名/加密取证要求只作用于报告撰写**：代码级 guidance 不再挂到 `report_finding`（worker/planner/pentest 只需提供原始 PoC/证据），只对持有 `update_finding_report` 的报告路径（reporter/auto/mainagent）生效；JS/key 还原与 Python PoC 的 `-p/--proxy` 要求由报告阶段完成。Python PoC 还必须对所有 HTTPS 请求使用 `verify=False`（并抑制 `InsecureRequestWarning`），以兼容自签名证书与记录代理重签证书。
 - **lddscan 导入只认 Http Data**：HTTP 服务导入不再回退到 Url Dedup / Hunter / Fofa，只读取探测结果表 `Http Data`；缺失时跳过并告警。Hunter / Fofa 是未探测的发现清单，不再可能被当成已验证 HTTP 资产导入。`Target`（公司/根域）与 `DNS Info`（子域/IP）保持不变。
 - **提示词明确 lddscan 子域探测口径**：代码级 guidance 告知模型 lddscan 同步时 Http Data 一定存在，它是对 DNS Info 子域逐个拼接 `http://:80` / `https://:443` 的真实探测结果；没有对应 status_code 的子域表示测绘阶段 curl 无返回，不是「未测试资产」，不要反复盲试，除非出现新端口/路径/协议/业务线索。并提示 `list_assets(type="subdomain")` 的 subdomain 行本身没有 HTTP 字段，需按同一 domain 复查 `type="service"` 行才能判断是否已探测。该 guidance 随工具装配注入，已有库无需重刷提示词。
-- **Python PoC 统一支持 `-p/--proxy`**：报告与漏洞证据里给出的可直接运行的 Python 复现脚本，必须提供 `-p/--proxy` 参数（`http://`、`https://`、`socks5h://`，缺省直连），并让所有 HTTP 请求走该代理（`requests` 用 `proxies=`；SOCKS5 需注明 `requests[socks]` 依赖），同时给出带 `-p` 的运行示例，便于复现者按自己的代理环境验证。该要求由代码级 guidance 注入，`report_finding` / `update_finding_report` 的调用方都会收到，不受 UI 提示词编辑影响；reporter 默认提示词同步更新，存量库通过 `reporter_prompt_proxy_poc_v1` 追加一版新默认。
+- **Python PoC 统一支持 `-p/--proxy`**：报告与漏洞证据里给出的可直接运行的 Python 复现脚本，必须提供 `-p/--proxy` 参数（`http://`、`https://`、`socks5h://`，缺省直连），并让所有 HTTP 请求走该代理（`requests` 用 `proxies=`；SOCKS5 需注明 `requests[socks]` 依赖），同时给出带 `-p` 的运行示例，便于复现者按自己的代理环境验证。该要求由代码级 guidance 注入，只对持有 `update_finding_report` 的报告路径生效；`report_finding` 只需原始证据，不受 UI 提示词编辑影响。reporter 默认提示词同步更新，存量库通过 `reporter_prompt_proxy_poc_v1` 追加一版新默认。
 - **发现与复测页显示漏洞编号**：发现列表（平铺/按任务分组）、任务详情「发现」Tab、仪表盘「最近发现」、复测页的漏洞选择列表与当前漏洞标题均显示独立 `findings` 表的编号（`#171` 形式），与报告中的编号一致，便于对照；漏洞详情页统一取 `finding_id`（回退 `id`）。复测面板标题显示「漏洞复测 #171」，复测历史行改为「复测 #id」，以区分复测记录号与漏洞编号。没有独立 findings 行的历史节点不显示编号，避免把探索图节点 id 误当成漏洞号。
 
 ### 修复
 
 - **首次运行的任务不受定时窗口控制**：暂停判定改用推导状态（引擎是否已启动），不再只看持久化的 `tasks.status`。首次运行的任务在数据库中可能一直是 `created`，此前会被窗口当成未运行而跳过，导致到点不暂停。
+
+### 构建与发布
+
+- **发布产物精简为 linux/amd64 与 windows/amd64**：`build.sh --release` 与 release workflow 不再默认构建 macOS 与 linux/arm64；Docker 镜像也改为仅 linux/amd64。需要其他目标时仍可传 `--target` / `ARTEX_TARGETS` 手动构建。
 
 ## [0.3.23] - 2026-10-24
 

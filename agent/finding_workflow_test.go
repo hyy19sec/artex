@@ -9,6 +9,47 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
+type renamedTool struct {
+	actool.CoreTool
+	name string
+}
+
+func (t renamedTool) Name() string { return t.name }
+
+// TestSigningGuidanceOnlyForReportWriters locks the split between recording a
+// finding (report_finding: raw evidence is enough) and writing its report
+// (update_finding_report: JS/key reconstruction + Python PoC proxy contract).
+func TestSigningGuidanceOnlyForReportWriters(t *testing.T) {
+	oldPolicy, oldResolve, oldAugment := FindingTrafficBindingEnabled, ToolResolve, ToolAugment
+	t.Cleanup(func() { FindingTrafficBindingEnabled, ToolResolve, ToolAugment = oldPolicy, oldResolve, oldAugment })
+	ToolAugment = nil
+	ToolResolve = nil
+
+	const marker = "签名/加密类漏洞取证要求"
+	for _, enabled := range []bool{false, true} {
+		on := enabled
+		FindingTrafficBindingEnabled = func() bool { return on }
+		ts := NewToolSet(nil, "fixture")
+		report := ts.addFinding() // report_finding
+		update := renamedTool{CoreTool: report, name: "update_finding_report"}
+
+		_, def, cleanup := AugmentTools(t.Context(), "worker", []actool.CoreTool{report})
+		cleanup()
+		if strings.Contains(def.FindingGuidance, marker) {
+			t.Fatalf("report_finding should not get signing guidance (binding=%v)", on)
+		}
+
+		_, def, cleanup = AugmentTools(t.Context(), "reporter", []actool.CoreTool{update})
+		cleanup()
+		if !strings.Contains(def.FindingGuidance, marker) {
+			t.Fatalf("update_finding_report missing signing guidance (binding=%v)", on)
+		}
+		if !strings.Contains(def.FindingGuidance, "verify=False") {
+			t.Fatalf("update_finding_report missing verify=False requirement (binding=%v)", on)
+		}
+	}
+}
+
 func TestFindingWorkflowSharedAssemblyAndSwitch(t *testing.T) {
 	oldPolicy, oldResolve, oldAugment := FindingTrafficBindingEnabled, ToolResolve, ToolAugment
 	t.Cleanup(func() { FindingTrafficBindingEnabled, ToolResolve, ToolAugment = oldPolicy, oldResolve, oldAugment })
