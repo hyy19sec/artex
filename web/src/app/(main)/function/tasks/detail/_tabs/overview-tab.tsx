@@ -19,6 +19,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import type {
   ConstraintScope,
   Finding,
   ModelTokenStat,
+  RatingTemplate,
   Stats,
   Task,
   TaskConstraint,
@@ -143,13 +145,15 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [constraints, setConstraints] = React.useState<TaskConstraint[]>([]);
   const [conText, setConText] = React.useState("");
   const [conKind, setConKind] = React.useState<TaskConstraint["kind"]>("deny");
-  const [conScope, setConScope] = React.useState<ConstraintScope>("operation");
   const [conBusy, setConBusy] = React.useState(false);
   const [conErr, setConErr] = React.useState("");
   const [editingConId, setEditingConId] = React.useState<string | null>(null);
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
-  const [editConScope, setEditConScope] = React.useState<ConstraintScope>("operation");
+  // 漏洞评级模板：任务创建时可能已选；这里可重新应用/追加，模板条款会快照进定级口径。
+  const [ratingTemplates, setRatingTemplates] = React.useState<RatingTemplate[]>([]);
+  const [ratingTemplateID, setRatingTemplateID] = React.useState<number | undefined>(undefined);
+  const [ratingTemplateBusy, setRatingTemplateBusy] = React.useState(false);
 
   const loadTokens = React.useCallback(async () => {
     try {
@@ -241,13 +245,44 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     }
   }, [taskId]);
 
+  const loadRatingCriteria = React.useCallback(async () => {
+    try {
+      const resp = await api.taskRatingCriteria(taskId);
+      setRatingTemplateID(resp.template?.id);
+    } catch {
+      // 忽略：无模板/瞬时错误
+    }
+  }, [taskId]);
+
+  React.useEffect(() => {
+    api
+      .ratingTemplates()
+      .then(setRatingTemplates)
+      .catch(() => setRatingTemplates([]));
+  }, []);
+
+  const applyRatingTemplate = async (mode: "replace" | "append") => {
+    if (!ratingTemplateID) return;
+    setRatingTemplateBusy(true);
+    setConErr("");
+    try {
+      const r = await api.applyRatingTemplate(taskId, ratingTemplateID, mode);
+      toast.success(mode === "replace" ? `已应用模板，新增 ${r.added} 条` : `已追加 ${r.added} 条`);
+      await Promise.all([loadConstraints(), loadRatingCriteria()]);
+    } catch (e) {
+      setConErr(e instanceof Error ? e.message : "应用模板失败");
+    } finally {
+      setRatingTemplateBusy(false);
+    }
+  };
+
   const addConstraint = async () => {
     const text = conText.trim();
     if (!text) return;
     setConBusy(true);
     setConErr("");
     try {
-      await api.addConstraint(taskId, text, conKind, conScope);
+      await api.addConstraint(taskId, text, conKind, "operation");
       setConText("");
       await loadConstraints();
     } catch (e) {
@@ -261,14 +296,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setEditingConId(c.id);
     setEditConText(c.text);
     setEditConKind(c.kind);
-    setEditConScope(c.scope ?? "operation");
   };
 
   const cancelEditConstraint = () => {
     setEditingConId(null);
     setEditConText("");
     setEditConKind("deny");
-    setEditConScope("operation");
   };
 
   const saveEditConstraint = async (c: TaskConstraint) => {
@@ -277,7 +310,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     setConBusy(true);
     setConErr("");
     try {
-      await api.updateConstraint(taskId, c.id, text, editConKind, editConScope);
+      await api.updateConstraint(taskId, c.id, text, editConKind, "operation");
       cancelEditConstraint();
       await loadConstraints();
     } catch (e) {
@@ -408,6 +441,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     void loadTokens();
     void loadGoals();
     void loadConstraints();
+    void loadRatingCriteria();
     const timer = setInterval(() => {
       void load();
       void loadTokens();
@@ -418,7 +452,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
+  }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints, loadRatingCriteria]);
 
   const running = intents.filter((i) => i.state === "running");
   const open = intents.filter((i) => i.state === "open");
@@ -437,42 +471,18 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     },
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
   );
-  // 约束按 scope 分组展示：operation=授权边界，rating=评分参考，report=报告规则。
-  // superseded 是历史版本，默认隐藏，避免和当前约束混在一起。
+  // 总览只展示操作授权；定级条款由模板管理、agent 通过 get_rating_criteria 按需读取，
+  // 不再在约束列表里逐条展示。superseded 是历史版本，默认隐藏。
   const activeConstraints = constraints.filter((c) => c.status !== "superseded");
-  const supersededCount = constraints.length - activeConstraints.length;
-  const constraintGroups: { scope: ConstraintScope; title: string; hint: string }[] = [
-    {
-      scope: "operation",
-      title: "操作授权",
-      hint: "task_scope 内默认授权；只有明确列出的禁止/排除项才跳过。",
-    },
-    {
-      scope: "rating",
-      title: "定级口径",
-      hint: "评分参考，不是授权；[计入]/[不收取] 用于判定严重度和是否计入目标。",
-    },
-    {
-      scope: "report",
-      title: "报告规则",
-      hint: "只在报告/取证阶段生效，不限制探索意图。",
-    },
-  ];
-  const constraintLabel = (scope: ConstraintScope, kind: TaskConstraint["kind"]) => {
-    if (scope === "rating") return kind === "allow" ? "计入" : "不收取";
-    if (scope === "report") return "规则";
-    return kind === "allow" ? "允许" : "禁止";
-  };
-  const constraintBadgeClass = (scope: ConstraintScope, kind: TaskConstraint["kind"]) => {
-    if (scope === "rating")
-      return kind === "allow"
-        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-        : "bg-amber-500/15 text-amber-600 dark:text-amber-400";
-    if (scope === "report") return "bg-sky-500/15 text-sky-600 dark:text-sky-400";
-    return kind === "allow"
+  const operationConstraints = activeConstraints.filter((c) => (c.scope ?? "operation") === "operation");
+  const supersededOperationCount = constraints.filter(
+    (c) => (c.scope ?? "operation") === "operation" && c.status === "superseded",
+  ).length;
+  const constraintLabel = (kind: TaskConstraint["kind"]) => (kind === "allow" ? "允许" : "禁止");
+  const constraintBadgeClass = (kind: TaskConstraint["kind"]) =>
+    kind === "allow"
       ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
       : "bg-red-500/15 text-red-600 dark:text-red-400";
-  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -616,45 +626,68 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           )}
         </CardContent>
       </Card>
-      {/* 约束管理：operation=操作授权 / rating=定级口径 / report=报告规则。三者用途不同，
+      {/* 约束管理：operation=操作授权 / rating=定级口径。两者用途不同，
           分开展示，避免把评级标准当成操作白名单。superseded 是历史版本，默认隐藏。 */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <ShieldAlertIcon className="size-4 text-amber-500" /> 约束管理
             <span className="text-muted-foreground text-xs font-normal">
-              （操作授权 / 定级口径 / 报告规则，共 {activeConstraints.length} 条
-              {supersededCount > 0 ? `，已隐藏 ${supersededCount} 条历史` : ""}；改动下一轮规划生效）
+              （操作授权，共 {operationConstraints.length} 条
+              {supersededOperationCount > 0 ? `，已隐藏 ${supersededOperationCount} 条历史` : ""}
+              ；定级口径由上方模板管理）
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          {/* 评级模板：把模板条款快照进「定级口径」。任务创建时选中的模板也会在这里显示。 */}
+          <div className="flex flex-wrap items-center gap-2 rounded-md border p-2">
+            <span className="text-sm font-medium">定级口径模板</span>
+            <NativeSelect
+              size="sm"
+              value={ratingTemplateID != null ? String(ratingTemplateID) : ""}
+              onChange={(e) => setRatingTemplateID(e.target.value ? Number(e.target.value) : undefined)}
+            >
+              <NativeSelectOption value="">未选择模板</NativeSelectOption>
+              {ratingTemplates.map((t) => (
+                <NativeSelectOption key={t.id} value={String(t.id)}>
+                  {t.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!ratingTemplateID || ratingTemplateBusy}
+              onClick={() => void applyRatingTemplate("replace")}
+            >
+              应用（替换）
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!ratingTemplateID || ratingTemplateBusy}
+              onClick={() => void applyRatingTemplate("append")}
+            >
+              追加
+            </Button>
+            <span className="text-muted-foreground text-xs">
+              模板条款会快照成本任务的 rating 约束；之后改模板不影响已建任务。
+            </span>
+          </div>
           {/* 新增表单 */}
           <div className="flex flex-wrap items-center gap-2">
-            <NativeSelect size="sm" value={conScope} onChange={(e) => setConScope(e.target.value as ConstraintScope)}>
-              <NativeSelectOption value="operation">操作授权</NativeSelectOption>
-              <NativeSelectOption value="rating">定级口径</NativeSelectOption>
-              <NativeSelectOption value="report">报告规则</NativeSelectOption>
+            <NativeSelect
+              size="sm"
+              value={conKind}
+              onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
+            >
+              <NativeSelectOption value="deny">禁止</NativeSelectOption>
+              <NativeSelectOption value="allow">允许</NativeSelectOption>
             </NativeSelect>
-            {conScope !== "report" && (
-              <NativeSelect
-                size="sm"
-                value={conKind}
-                onChange={(e) => setConKind(e.target.value as TaskConstraint["kind"])}
-              >
-                <NativeSelectOption value="deny">{conScope === "rating" ? "不收取" : "禁止"}</NativeSelectOption>
-                <NativeSelectOption value="allow">{conScope === "rating" ? "计入" : "允许"}</NativeSelectOption>
-              </NativeSelect>
-            )}
             <Input
               className="h-7 min-w-56 flex-1 text-sm"
-              placeholder={
-                conScope === "rating"
-                  ? "一条评级条款，如『高危-1 获取服务级关键凭证』"
-                  : conScope === "report"
-                    ? "一条报告要求，如『必须附可复现的请求响应』"
-                    : "一条操作约束，如『仅测当前端口，不扫其他端口』"
-              }
+              placeholder="一条操作约束，如『仅测当前端口，不扫其他端口』"
               value={conText}
               onChange={(e) => setConText(e.target.value)}
               onKeyDown={(e) => {
@@ -672,110 +705,87 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </Button>
             {conErr && <span className="text-xs text-red-500">{conErr}</span>}
           </div>
-          {/* 分组列表 */}
-          {constraintGroups.map((group) => {
-            const items = activeConstraints.filter((c) => (c.scope ?? "operation") === group.scope);
-            return (
-              <div key={group.scope} className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-sm font-medium">{group.title}</span>
-                  <span className="text-muted-foreground text-xs">{group.hint}</span>
-                </div>
-                {items.length === 0 ? (
-                  <p className="text-muted-foreground text-xs">暂无{group.title}。</p>
+          {/* 操作授权列表（定级条款不在总览展示） */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-sm font-medium">操作授权</span>
+              <span className="text-muted-foreground text-xs">
+                task_scope 内默认授权；只有明确列出的禁止/排除项才跳过。
+              </span>
+            </div>
+            {operationConstraints.length === 0 ? (
+              <p className="text-muted-foreground text-xs">暂无操作授权约束。</p>
+            ) : (
+              operationConstraints.map((c) =>
+                editingConId === c.id ? (
+                  <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+                    <NativeSelect
+                      size="sm"
+                      value={editConKind}
+                      onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
+                    >
+                      <NativeSelectOption value="deny">禁止</NativeSelectOption>
+                      <NativeSelectOption value="allow">允许</NativeSelectOption>
+                    </NativeSelect>
+                    <Input
+                      className="h-7 min-w-56 flex-1 text-sm"
+                      value={editConText}
+                      onChange={(e) => setEditConText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void saveEditConstraint(c);
+                        if (e.key === "Escape") cancelEditConstraint();
+                      }}
+                      disabled={conBusy}
+                      autoFocus
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy || !editConText.trim()}
+                      onClick={() => void saveEditConstraint(c)}
+                    >
+                      <CheckIcon className="size-3.5 text-emerald-500" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy}
+                      onClick={cancelEditConstraint}
+                    >
+                      <XIcon className="size-3.5" />
+                    </Button>
+                  </div>
                 ) : (
-                  items.map((c) =>
-                    editingConId === c.id ? (
-                      <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
-                        <NativeSelect
-                          size="sm"
-                          value={editConScope}
-                          onChange={(e) => setEditConScope(e.target.value as ConstraintScope)}
-                        >
-                          <NativeSelectOption value="operation">操作授权</NativeSelectOption>
-                          <NativeSelectOption value="rating">定级口径</NativeSelectOption>
-                          <NativeSelectOption value="report">报告规则</NativeSelectOption>
-                        </NativeSelect>
-                        {editConScope !== "report" && (
-                          <NativeSelect
-                            size="sm"
-                            value={editConKind}
-                            onChange={(e) => setEditConKind(e.target.value as TaskConstraint["kind"])}
-                          >
-                            <NativeSelectOption value="deny">
-                              {editConScope === "rating" ? "不收取" : "禁止"}
-                            </NativeSelectOption>
-                            <NativeSelectOption value="allow">
-                              {editConScope === "rating" ? "计入" : "允许"}
-                            </NativeSelectOption>
-                          </NativeSelect>
-                        )}
-                        <Input
-                          className="h-7 min-w-56 flex-1 text-sm"
-                          value={editConText}
-                          onChange={(e) => setEditConText(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void saveEditConstraint(c);
-                            if (e.key === "Escape") cancelEditConstraint();
-                          }}
-                          disabled={conBusy}
-                          autoFocus
-                        />
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={conBusy || !editConText.trim()}
-                          onClick={() => void saveEditConstraint(c)}
-                        >
-                          <CheckIcon className="size-3.5 text-emerald-500" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={conBusy}
-                          onClick={cancelEditConstraint}
-                        >
-                          <XIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                        <span
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${constraintBadgeClass(
-                            c.scope ?? "operation",
-                            c.kind,
-                          )}`}
-                        >
-                          {constraintLabel(c.scope ?? "operation", c.kind)}
-                        </span>
-                        <span className="min-w-0 flex-1 break-words">{c.text}</span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={conBusy}
-                          onClick={() => startEditConstraint(c)}
-                        >
-                          <PencilIcon className="size-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 shrink-0 px-1.5"
-                          disabled={conBusy}
-                          onClick={() => void removeConstraint(c)}
-                        >
-                          <Trash2Icon className="size-3.5 text-red-500" />
-                        </Button>
-                      </div>
-                    ),
-                  )
-                )}
-              </div>
-            );
-          })}
+                  <div key={c.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${constraintBadgeClass(c.kind)}`}>
+                      {constraintLabel(c.kind)}
+                    </span>
+                    <span className="min-w-0 flex-1 break-words">{c.text}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy}
+                      onClick={() => startEditConstraint(c)}
+                    >
+                      <PencilIcon className="size-3.5" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0 px-1.5"
+                      disabled={conBusy}
+                      onClick={() => void removeConstraint(c)}
+                    >
+                      <Trash2Icon className="size-3.5 text-red-500" />
+                    </Button>
+                  </div>
+                ),
+              )
+            )}
+          </div>
         </CardContent>
       </Card>
       <TaskInterceptRulesCard taskId={taskId} />

@@ -487,6 +487,9 @@ func (s *Server) seedOrchestrationTools() {
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
 	}
 	s.refreshBuiltinToolSchemas()
+	s.refreshRatingToolSchemas()
+	s.refreshNoReportToolSchema()
+	s.refreshRatingOnDemandToolSchema()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
@@ -497,6 +500,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.unbindGoalMetDefault()
 	s.reseedGoalsPrompt()               // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
 	s.reseedGoalsStructuredPrompt()     // goals 提示词加入 scope/supersedes 结构化约束(一次性)
+	s.reseedGoalsNoReportPrompt()       // goals 提示词移除已废弃的 scope=report(一次性)
 	s.reseedMainAgentPrompt()           // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
 	s.reseedPlannerPrompt()             // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
 	s.reseedPlannerSeverityPrompt()     // planner 提示词:加入 finding severity / high+ 计数说明(一次性)
@@ -552,6 +556,70 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	log.Printf("[tools] 已刷新 orchestration/platform 工具 schema 到代码默认(一次性)")
 }
 
+// refreshRatingToolSchemas propagates the new rating_clause_id / rating_basis
+// parameters and description into already-seeded report_finding / record_fact rows.
+// SeedTool is first-insert-only, so without this one-time refresh an existing DB
+// keeps the old schema and the model never sees the new parameters.
+func (s *Server) refreshRatingToolSchemas() {
+	const flag = "tool_schema_refresh_v12_rating_basis"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, sd := range agent.BuiltinToolSeeds() {
+		if sd.Key != "report_finding" && sd.Key != "record_fact" {
+			continue
+		}
+		schema, _ := json.Marshal(sd.Schema)
+		if err := s.m.pg.RefreshToolDefaults(sd.Key, sd.Desc, schema); err != nil {
+			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
+		}
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[tools] 已刷新 report_finding/record_fact schema(评级依据)")
+}
+
+// refreshNoReportToolSchema removes the deprecated report scope from the
+// already-seeded set_constraints tool row. SeedTool is first-insert-only, so a
+// new one-time refresh is needed after a code schema change.
+func (s *Server) refreshNoReportToolSchema() {
+	const flag = "tool_schema_refresh_v13_no_report_scope"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, sd := range agent.BuiltinToolSeeds() {
+		if sd.Key != "set_constraints" {
+			continue
+		}
+		schema, _ := json.Marshal(sd.Schema)
+		if err := s.m.pg.RefreshToolDefaults(sd.Key, sd.Desc, schema); err != nil {
+			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
+		}
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[tools] 已刷新 set_constraints schema(移除 report scope)")
+}
+
+// refreshRatingOnDemandToolSchema updates report_finding / get_rating_criteria
+// descriptions after rating clauses stopped being inlined into the system prompt.
+// SeedTool is first-insert-only, so existing rows need this one-time refresh.
+func (s *Server) refreshRatingOnDemandToolSchema() {
+	const flag = "tool_schema_refresh_v14_rating_on_demand"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	for _, sd := range agent.BuiltinToolSeeds() {
+		if sd.Key != "report_finding" && sd.Key != "get_rating_criteria" {
+			continue
+		}
+		schema, _ := json.Marshal(sd.Schema)
+		if err := s.m.pg.RefreshToolDefaults(sd.Key, sd.Desc, schema); err != nil {
+			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
+		}
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+	log.Printf("[tools] 已刷新 report_finding/get_rating_criteria 描述(评级口径按需读取)")
+}
+
 // unbindGoalMetDefault removes goal_met's default "planner" binding ONCE (guarded by
 // a settings flag), so existing DBs match the new default of NO agent. goal_met bypasses
 // per-goal prove_goal to declare the whole task done — powerful/risky and redundant with
@@ -599,7 +667,7 @@ func (s *Server) reseedGoalsPrompt() {
 	log.Printf("[prompts] goals 提示词已追加新默认版本(加入抽操作约束步,一次性)")
 }
 
-// reseedGoalsStructuredPrompt 在 goals 提示词里加入 scope=operation/rating/report
+// reseedGoalsStructuredPrompt 在 goals 提示词里加入 scope=operation/rating
 // 与 supersedes_id 的结构化约束说明，避免把整份评级标准塞进 operation allow。
 // 与 reseedGoalsPrompt 同构：新 flag 守卫、追加一版当前代码默认并切过去。
 func (s *Server) reseedGoalsStructuredPrompt() {
@@ -624,6 +692,33 @@ func (s *Server) reseedGoalsStructuredPrompt() {
 		return
 	}
 	log.Printf("[prompts] goals 提示词已追加新默认版本(加入 scope/supersedes 结构化约束,一次性)")
+}
+
+// reseedGoalsNoReportPrompt 把 goals 提示词刷成【当前代码默认】以移除已废弃的
+// scope=report。与 reseedGoalsStructuredPrompt 同构：新 flag 守卫、追加一版当前
+// 代码默认并切过去，旧版本保留在历史里。
+func (s *Server) reseedGoalsNoReportPrompt() {
+	const flag = "goals_prompt_no_report_scope_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }()
+	a, err := s.m.pg.GetAgentByKey("goals")
+	if err != nil || a == nil {
+		return
+	}
+	tmpl := agent.BuiltinPromptSeeds()["goals"]
+	if tmpl == "" {
+		return
+	}
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("[prompts] goals 提示词重刷(移除 report scope)失败: %v", err)
+		return
+	}
+	log.Printf("[prompts] goals 提示词已追加新默认版本(移除 report scope,一次性)")
 }
 
 // reseedMainAgentPrompt 把 mainagent 提示词刷成【当前代码默认】——默认正文新增了「目标全部

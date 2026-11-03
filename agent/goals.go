@@ -22,7 +22,6 @@ const goalsDefaultTmpl = `你是渗透测试目标分解器。你的职责是从
 从「任务目标 / 任务描述」里识别约束，调用 set_constraints 逐条登记。每条必须带 scope：
 - scope=operation：操作授权边界——能/不能做哪些操作（如「只允许被动侦察」「仅测某域名」「禁止爆破」「不得对生产环境写/删」）。type=allow 表示允许/限定范围，type=deny 表示禁止/排除。
 - scope=rating：定级口径/评分条款——什么算严重/高危/中危/低危、什么不收取。type=allow 表示可计入/接受，type=deny 表示不计入/忽略。**评级标准不是操作授权，不要用 operation 登记。**
-- scope=report：报告/取证要求——只在报告阶段生效（如「报告必须含可复现的请求响应」「签名类漏洞必须给 JS 定位和 PoC」）。
 - 如果评级标准是一份文件，只登记一条 scope=rating 的约束：「定级依据：<文件路径>」；不要把整份标准拆成几十条 operation allow。
 - 约束 ≠ 目标，也 ≠ 攻击步骤：它是对操作行为边界、评分口径或报告质量的规定。
 - **约束必须【自包含、写死具体目标】**：把「当前目标/当前端口/当前IP/当前域名/本站」这类指代词替换成任务目标/描述里的具体值。
@@ -102,14 +101,22 @@ func DecomposeGoals(ctx context.Context, prov llm.Provider, dataDir, goalText, d
 	if prov == nil {
 		return nil
 	}
-	return DecomposeGoalsWithProvider(ctx, prov, dataDir, goalText, desc, as, ts, taskID, false, 0, emit)
+	return DecomposeGoalsWithProvider(ctx, prov, dataDir, goalText, desc, as, ts, taskID, false, 0, false, emit)
 }
+
+// goalsRatingCriteriaTail tells the decomposer not to re-extract rating clauses
+// when the task already has a template/active rating criteria. The template
+// snapshot is authoritative; description-derived rating rows would duplicate or
+// conflict with it.
+const goalsRatingCriteriaTail = `
+
+**注意：本任务已有生效的定级口径（来自评级模板或已有 rating 约束）。不要再从「任务描述」里抽 scope=rating 的约束；只抽 operation。评级标准以现有定级口径为准。**`
 
 // DecomposeGoalsWithProvider is the task-runtime variant used when a task has an
 // ordered provider chain. It preserves the same tools and write behavior while
 // letting the caller own provider selection/failover. maxTokens is the profile's
 // per-reply output cap (0 = send none).
-func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir, goalText, desc string, as *db.AssetStore, ts *db.ExplorationStore, taskID int64, nonStreaming bool, maxTokens int, emit func(db.Activity)) []GoalSpec {
+func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir, goalText, desc string, as *db.AssetStore, ts *db.ExplorationStore, taskID int64, nonStreaming bool, maxTokens int, hasRatingCriteria bool, emit func(db.Activity)) []GoalSpec {
 	if prov == nil {
 		return nil
 	}
@@ -130,6 +137,9 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
 	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+	if hasRatingCriteria {
+		sys += goalsRatingCriteriaTail
+	}
 	// set_constraints 始终可用(不依赖 asset store):正文已含「先抽操作约束再拆目标」这步
 	// (可在 agent 编辑页改措辞),这里只需接上工具。
 	tools := []actool.CoreTool{tsx.setGoals(), tsx.setConstraints()}

@@ -32,6 +32,7 @@ export interface Task {
   engine_mode?: EngineMode;
   tokens?: TokenTotal; // whole-task token consumption
   llm_profile_id?: number; // LLM profile used; absent = default profile
+  rating_template_id?: number; // 创建任务时选择的漏洞评级模板
   llm_profile_ids?: number[]; // ordered task-level failover chain
   active_llm_profile_id?: number; // profile used by the next LLM call
   llm_failover_state?: "default" | "ready" | "chain_exhausted" | string;
@@ -460,7 +461,7 @@ export interface TaskGoal {
 
 // 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。
 export type ConstraintKind = "allow" | "deny";
-export type ConstraintScope = "operation" | "rating" | "report";
+export type ConstraintScope = "operation" | "rating";
 export interface TaskConstraint {
   id: string;
   kind: ConstraintKind;
@@ -470,6 +471,37 @@ export interface TaskConstraint {
   status?: "active" | "superseded";
   supersedes_id?: string;
   ts?: string;
+}
+
+// ---- Rating templates (漏洞评级模板) ----
+export interface RatingTemplateClause {
+  id: number;
+  template_id?: number;
+  code: string; // 严重-1 / 高危-2 / 忽略-1 ...
+  kind: ConstraintKind; // allow=计入 / deny=不收取
+  text: string;
+  sort_order: number;
+}
+
+export interface RatingTemplate {
+  id: number;
+  name: string;
+  description: string;
+  builtin: boolean;
+  clauses?: RatingTemplateClause[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RatingTemplateInput {
+  name: string;
+  description: string;
+  clauses: Array<{ code: string; kind: ConstraintKind; text: string; sort_order?: number }>;
+}
+
+export interface RatingCriteria {
+  template?: RatingTemplate;
+  clauses: TaskConstraint[];
 }
 
 // ---- Findings ----
@@ -508,6 +540,9 @@ export interface Finding {
   summary: string;
   evidence: string;
   report?: string; // 详细报告(Markdown);仅详情接口返回,列表为空
+  rating_clause_id?: string; // 引用的定级条款快照 id
+  rating_clause_text?: string; // 条款文本快照
+  rating_basis?: string; // 未匹配条款时的评级依据
   intent_id?: string;
   param_id?: string;
   task_id?: string;

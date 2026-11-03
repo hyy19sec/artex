@@ -297,8 +297,7 @@ CREATE TABLE IF NOT EXISTS task_constraints (
     exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
     kind           TEXT NOT NULL CHECK (kind IN ('allow','deny')),
     -- operation: 能/不能做哪些操作（授权边界）；
-    -- rating: 定级口径（评分参考，不是授权）；
-    -- report: 报告/取证要求（只在报告阶段生效）。
+    -- rating: 定级口径（评分参考，不是授权）。
     scope          TEXT NOT NULL DEFAULT 'operation',
     text           TEXT NOT NULL,
     origin         TEXT,
@@ -310,25 +309,56 @@ CREATE TABLE IF NOT EXISTS task_constraints (
 ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'operation';
 ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE task_constraints ADD COLUMN IF NOT EXISTS supersedes_id BIGINT REFERENCES task_constraints(id) ON DELETE SET NULL;
--- 旧库回填：把误塞进 allow/deny 的定级条款和报告要求分到独立 scope。
+-- 旧库回填：把误塞进 allow/deny 的定级条款分到独立 scope。
 UPDATE task_constraints SET scope='rating'
 WHERE scope='operation' AND (
     text LIKE '【敏感度%' OR text LIKE '【严重%' OR text LIKE '【高危%'
     OR text LIKE '【中危%' OR text LIKE '【低危%' OR text LIKE '【忽略%'
 );
-UPDATE task_constraints SET scope='report'
-WHERE scope='operation' AND (
-    text LIKE '【报告%' OR text LIKE '【取证%' OR text LIKE '【PoC%'
-);
+-- report scope 已移除：旧的报告/取证约束不删除，迁移为 superseded operation 历史，
+-- 不再注入提示词。报告要求由代码级 guidance 与 reporter 提示词负责。
+-- 必须在重建 scope CHECK 之前执行，否则旧库的 report 行会违反新约束。
+UPDATE task_constraints SET scope='operation', status='superseded', updated_at=now()
+WHERE scope='report';
 ALTER TABLE task_constraints DROP CONSTRAINT IF EXISTS task_constraints_scope_check;
 ALTER TABLE task_constraints ADD CONSTRAINT task_constraints_scope_check
-    CHECK (scope IN ('operation','rating','report'));
+    CHECK (scope IN ('operation','rating'));
 ALTER TABLE task_constraints DROP CONSTRAINT IF EXISTS task_constraints_status_check;
 ALTER TABLE task_constraints ADD CONSTRAINT task_constraints_status_check
     CHECK (status IN ('active','superseded'));
 CREATE INDEX IF NOT EXISTS idx_task_constraints_exp ON task_constraints(exploration_id);
 CREATE INDEX IF NOT EXISTS idx_task_constraints_active ON task_constraints(exploration_id, scope)
     WHERE status='active';
+
+-- 漏洞评级模板：可复用的定级口径。任务创建/应用模板时把条款快照进
+-- task_constraints(scope='rating')，快照行 id 就是 report_finding 的 rating_clause_id。
+CREATE TABLE IF NOT EXISTS rating_templates (
+    id          BIGSERIAL PRIMARY KEY,
+    nkey        TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    builtin     BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS rating_template_clauses (
+    id          BIGSERIAL PRIMARY KEY,
+    template_id BIGINT NOT NULL REFERENCES rating_templates(id) ON DELETE CASCADE,
+    code        TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL CHECK (kind IN ('allow','deny')),
+    text        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rating_template_clauses
+    ON rating_template_clauses(template_id, sort_order, id);
+DROP TRIGGER IF EXISTS trg_rating_templates_upd ON rating_templates;
+CREATE TRIGGER trg_rating_templates_upd BEFORE UPDATE ON rating_templates
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_rating_template_clauses_upd ON rating_template_clauses;
+CREATE TRIGGER trg_rating_template_clauses_upd BEFORE UPDATE ON rating_template_clauses
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE IF NOT EXISTS activity (
     id                 BIGSERIAL PRIMARY KEY,
@@ -553,6 +583,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     queue_mode     TEXT NOT NULL DEFAULT '',
     llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
     active_llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
+    rating_template_id BIGINT REFERENCES rating_templates(id) ON DELETE SET NULL,
     llm_chain_revision BIGINT NOT NULL DEFAULT 0,
     company_id     BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     parent_ref     TEXT,
@@ -575,6 +606,7 @@ CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- planner 心跳触发间隔(秒);补旧库。默认 300s(5min)。见 docs/planner-trigger-impl-plan.md
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS rating_template_id BIGINT REFERENCES rating_templates(id) ON DELETE SET NULL;
 -- 并发上限挂起态;补旧库。true=因并发上限排队、等待空位自动启动。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false;
 -- 定时测试窗口的自动暂停标记;补旧库。true=由「定时测试」自动暂停(非用户手动暂停),
@@ -1140,6 +1172,11 @@ CREATE TABLE IF NOT EXISTS findings (
     evidence    TEXT NOT NULL DEFAULT '',
     worker      TEXT NOT NULL DEFAULT '',
     asset_ids   JSONB NOT NULL DEFAULT '[]',
+    -- 评级依据：引用 task_constraints(scope='rating') 的快照 id，并保存条款文本快照；
+    -- 没有匹配条款时用 rating_basis 记录自由文本依据。
+    rating_clause_id   BIGINT NOT NULL DEFAULT 0,
+    rating_clause_text TEXT NOT NULL DEFAULT '',
+    rating_basis       TEXT NOT NULL DEFAULT '',
     -- 处置状态：pending 待处理 / in_progress 处理中 / confirmed 已确认 / resolved 已处理 / fixed 已修复 /
     -- false_positive 误报 / ignored 忽略 / duplicate 重复 / risk_accepted 风险接受。
     -- 取值不加 CHECK：旧库靠下面的 ALTER 补列,CHECK 无法回填,统一由 server 侧白名单校验。
@@ -1151,6 +1188,9 @@ CREATE TABLE IF NOT EXISTS findings (
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS rating_clause_id   BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS rating_clause_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS rating_basis       TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);

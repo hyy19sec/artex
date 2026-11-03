@@ -21,6 +21,7 @@ import type {
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
+  RatingTemplate,
   ScopeRow,
   Task,
   TaskArchive,
@@ -46,6 +47,29 @@ const mockTasks = structuredClone(D.tasks);
 const mockFindings = structuredClone(D.findings);
 const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
+const mockRatingTemplates: RatingTemplate[] = [
+  {
+    id: 1,
+    name: "互联网 SRC（示例）",
+    description: "Mock 数据：按实际 SRC 标准调整。",
+    builtin: true,
+    clauses: [
+      { id: 11, template_id: 1, code: "严重-1", kind: "allow", text: "直接获取服务器/系统权限", sort_order: 0 },
+      { id: 12, template_id: 1, code: "高危-1", kind: "allow", text: "越权读取重要敏感数据", sort_order: 1 },
+      { id: 13, template_id: 1, code: "忽略-1", kind: "deny", text: "仅理论可行、未实际验证", sort_order: 2 },
+    ],
+  },
+  {
+    id: 2,
+    name: "攻防（示例）",
+    description: "Mock 数据：按实际攻防规则调整。",
+    builtin: true,
+    clauses: [
+      { id: 21, template_id: 2, code: "得分-1", kind: "allow", text: "获取目标核心权限", sort_order: 0 },
+      { id: 22, template_id: 2, code: "忽略-1", kind: "deny", text: "仅扫描/指纹", sort_order: 1 },
+    ],
+  },
+];
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
 const mockRetests: FindingRetest[] = [];
@@ -1296,6 +1320,52 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     task.category_id = category?.id;
     task.category_name = category?.name;
     return task;
+  }
+  if (path === "/rating-templates" && m === "GET") return { templates: mockRatingTemplates };
+  if (path === "/rating-templates" && m === "POST") {
+    const nextID = mockRatingTemplates.reduce((max, t) => Math.max(max, t.id), 0) + 1;
+    const created: RatingTemplate = {
+      id: nextID,
+      name: String(b.name ?? "").trim() || "未命名模板",
+      description: String(b.description ?? ""),
+      builtin: false,
+      clauses: (Array.isArray(b.clauses) ? b.clauses : []).map((c, i) => ({
+        id: nextID * 100 + i,
+        template_id: nextID,
+        code: String(c?.code ?? ""),
+        kind: c?.kind === "deny" ? "deny" : "allow",
+        text: String(c?.text ?? ""),
+        sort_order: i,
+      })),
+    };
+    mockRatingTemplates.unshift(created);
+    return created;
+  }
+  if (seg[0] === "rating-templates" && seg.length === 2 && m === "PUT") {
+    const template = mockRatingTemplates.find((t) => t.id === Number(seg[1]));
+    if (!template) return {};
+    template.name = String(b.name ?? template.name);
+    template.description = String(b.description ?? template.description);
+    template.clauses = (Array.isArray(b.clauses) ? b.clauses : (template.clauses ?? [])).map((c, i) => ({
+      id: template.id * 100 + i,
+      template_id: template.id,
+      code: String(c?.code ?? ""),
+      kind: c?.kind === "deny" ? "deny" : "allow",
+      text: String(c?.text ?? ""),
+      sort_order: i,
+    }));
+    return template;
+  }
+  if (seg[0] === "rating-templates" && seg.length === 2 && m === "DELETE") {
+    const index = mockRatingTemplates.findIndex((t) => t.id === Number(seg[1]));
+    if (index >= 0) mockRatingTemplates.splice(index, 1);
+    return { deleted: true };
+  }
+  if (seg[0] === "tasks" && seg[2] === "rating-criteria" && m === "GET") {
+    return { template: mockRatingTemplates[0], clauses: [] };
+  }
+  if (seg[0] === "tasks" && seg[2] === "rating-template" && m === "POST") {
+    return { ok: true, added: 0 };
   }
   if (path === "/task-templates" && m === "GET") return { templates: mockTaskTemplates };
   if (path === "/task-templates" && m === "POST") {

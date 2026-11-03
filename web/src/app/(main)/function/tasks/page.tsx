@@ -99,6 +99,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { Label } from "@/components/ui/label";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -128,6 +129,7 @@ import type {
   DeleteTaskOptions,
   DeleteTaskResult,
   LLMProfile,
+  RatingTemplate,
   Task,
   TaskArchive,
   TaskArchiveState,
@@ -3076,6 +3078,8 @@ function CreateTaskSheet({
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");
   const [goal, setGoal] = React.useState("");
+  const [ratingTemplates, setRatingTemplates] = React.useState<RatingTemplate[]>([]);
+  const [ratingTemplateID, setRatingTemplateID] = React.useState<number | undefined>(undefined);
   const [selectedTemplateID, setSelectedTemplateID] = React.useState<number | null>(null);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [companies, setCompanies] = React.useState<Company[]>([]);
@@ -3105,6 +3109,10 @@ function CreateTaskSheet({
       .companies()
       .then(setCompanies)
       .catch(() => setCompanies([]));
+    api
+      .ratingTemplates()
+      .then(setRatingTemplates)
+      .catch(() => setRatingTemplates([]));
   }, []);
 
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
@@ -3129,6 +3137,8 @@ function CreateTaskSheet({
     }
   }
 
+  const selectedRatingTemplate = ratingTemplates.find((t) => t.id === ratingTemplateID);
+
   async function createTask() {
     if (!description.trim() || !goal.trim()) {
       toast.error("请填写描述与目标");
@@ -3147,6 +3157,7 @@ function CreateTaskSheet({
         categoryId: categoryID,
         description: description.trim(),
         goal: goal.trim(),
+        ratingTemplateId: ratingTemplateID,
         llmProfileIds: llmProfileIDs.map(Number),
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
@@ -3163,6 +3174,7 @@ function CreateTaskSheet({
       setCategoryID(undefined);
       setDescription("");
       setGoal("");
+      setRatingTemplateID(undefined);
       setSelectedTemplateID(null);
       setSourceTaskIDs([]);
       setCompanyIDs([]);
@@ -3285,6 +3297,39 @@ function CreateTaskSheet({
                 onChange={(e) => setGoal(e.target.value)}
               />
             </div>
+            <Field>
+              <FieldLabel htmlFor="rating-template">漏洞评级模板（可选）</FieldLabel>
+              <NativeSelect
+                id="rating-template"
+                value={ratingTemplateID != null ? String(ratingTemplateID) : ""}
+                onChange={(e) => setRatingTemplateID(e.target.value ? Number(e.target.value) : undefined)}
+              >
+                <NativeSelectOption value="">不使用模板</NativeSelectOption>
+                {ratingTemplates.map((t) => (
+                  <NativeSelectOption key={t.id} value={String(t.id)}>
+                    {t.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <FieldDescription>
+                选中后会把模板条款快照成任务的「定级口径」；之后修改模板不会影响已建任务，可在任务详情里继续编辑。
+              </FieldDescription>
+              {selectedRatingTemplate && (selectedRatingTemplate.clauses?.length ?? 0) > 0 && (
+                <div className="max-h-36 overflow-y-auto rounded-md border p-2 text-xs">
+                  {(selectedRatingTemplate.clauses ?? []).slice(0, 10).map((c) => (
+                    <div key={c.id} className="flex gap-1.5 py-0.5">
+                      <span className="shrink-0 font-medium">{c.code || (c.kind === "allow" ? "计入" : "不收取")}</span>
+                      <span className="text-muted-foreground">
+                        {c.kind === "allow" ? "计入" : "不收取"} · {c.text}
+                      </span>
+                    </div>
+                  ))}
+                  {(selectedRatingTemplate.clauses?.length ?? 0) > 10 && (
+                    <p className="text-muted-foreground pt-1">…共 {selectedRatingTemplate.clauses?.length} 条</p>
+                  )}
+                </div>
+              )}
+            </Field>
             <Field>
               <FieldLabel htmlFor="source-tasks">关联任务</FieldLabel>
               <SourceTaskPicker

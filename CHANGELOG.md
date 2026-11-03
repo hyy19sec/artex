@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-03
+## [0.4.0] - 2026-11-04
 
 ### 新增
 
@@ -12,16 +12,21 @@
 - **新增 `list_intents` 意图账本**：planner/mainagent 可按 state、summary/detail 关键词和 `before` 游标分页查看本任务及直接来源任务的意图，补 `graph_overview` 的 `recent_done_intents` 只有最近 12 条、而 `done_intents_total` 可达数百条的缺口。来源任务意图只读；完整内容仍用 `node_detail(id)`。
 - **`graph_overview` 增加全量计数**：新增 `intents_by_state`（如 exhausted 300 / done 44 / stopped 7 / blocked 1）与 `cold_digests_total`（窗口 15 条之外的 digest 总数）；planner 提示词把“完整态势”改为“蒸馏态势窗口”，并明确 `recent_*` 不是全量。
 - **新增 `list_finding_quota` 工具**：按 `findings.asset_ids` 关联 service 资产，统计每个 host:port 已报的 critical/high/medium/low/total，用于判断单主机配额，避免 hint 里写死“已报 12 个”。
+- **漏洞评级模板**：新增全局「评级模板」页面与 `rating_templates` / `rating_template_clauses` 表，内置互联网 SRC / 银行 SRC / 攻防三套示例模板；新建任务和任务详情均可选择模板，模板条款会快照成 `task_constraints(scope='rating')`，之后修改模板不影响已建任务。
+- **评级依据可校验**：新增 `get_rating_criteria` 工具（worker/planner/mainagent），`constraintBlock` 的 rating 条款带上 `[#id]`；`report_finding` 新增 `rating_clause_id` / `rating_basis`，有生效 rating 条款时必须引用条款或说明未匹配依据，并把条款文本快照写入 `findings`，漏洞详情展示「评级依据」。
 
 ### 变更
 
 - **planner 硬底线改为 worker 利用率阈值**：`graph_overview` 新增 `workers`、`running_intents_count`、`dispatch_threshold`（严格 >0.8×workers；8 workers 时 threshold=7）、`must_dispatch`。目标未达成、`frontier_open=0` 且 `running_intents_count < dispatch_threshold` 时，本轮必须至少补一条新意图；`running ≥ threshold`、有排队意图或目标已达成时才允许不补。唯一例外是所有候选都被硬 operation deny / out-of-scope / closed_families 排除，此时必须逐条写明硬否决理由。存量库通过 `planner_prompt_dispatch_threshold_v1` 追加一版新默认。
-- **约束按 scope 拆分**：`task_constraints` 新增 `scope`（operation/rating/report）、`status`（active/superseded）、`supersedes_id`；`constraintBlock` 分开渲染“操作授权 / 定级口径 / 报告规则”，末尾改为“task_scope 内默认授权，只有明确禁止/排除项才跳过”。旧库的评级/报告类约束按文本前缀自动回填 scope。
-- **goals 输出结构化约束**：`set_constraints` 支持 `scope` 与 `supersedes_id`；goals 提示词要求 operation 只放操作边界，评级条款放 scope=rating（文件类只登记“定级依据：<路径>”），报告要求放 scope=report，不再把整份评级标准塞进 allow。存量库通过 `goals_prompt_structured_constraints_v1` 追加一版新默认。
+- **约束按 scope 拆分**：`task_constraints` 新增 `scope`（operation/rating）、`status`（active/superseded）、`supersedes_id`；`constraintBlock` 分开渲染“操作授权 / 定级口径”（报告/取证要求由代码级 guidance 负责），末尾改为“task_scope 内默认授权，只有明确禁止/排除项才跳过”。旧库的评级类约束按文本前缀自动回填 scope。
+- **goals 输出结构化约束**：`set_constraints` 支持 `scope` 与 `supersedes_id`；goals 提示词要求 operation 只放操作边界，评级条款放 scope=rating（文件类只登记“定级依据：<路径>”），不再把整份评级标准塞进 allow。存量库通过 `goals_prompt_structured_constraints_v1` 追加一版新默认。
 - **lddscan 资产导入改为批量事务**：Target / DNS Info / Http Data 三个 sheet 都按每 500 行一个事务提交，只获取一次公司范围写锁、只 commit 一次；单批内某行失败时回滚整批并逐行重放，坏行只影响自己，其余行照常落库。
 - **降低 `assets` 表写放大**：所有 Upsert 的 `last_seen` 改为「距上次超过 1 小时才更新」，避免每次冲突更新都改索引列、无法走 HOT；`task_ids` 合并按固定顺序输出，避免集合相同但顺序变化触发无谓更新。`task_asset_links` 触发器拆成 INSERT / UPDATE 两个并加 `WHEN`，仅在 `task_ids` 真正变化时执行；移除 5 个线上 0 次扫描且现有查询模式（`unnest`/`ILIKE`、`= ANY`）无法使用的索引：`idx_av2_task_ids`、`idx_av2_c_segment`、`idx_av2_technologies`、`idx_av2_bound_domains`、`idx_av2_open_ports`。
 
 - **`list_facts` 的 `q` 同时搜索摘要和详情**：之前只搜 `payload->>'summary'`，detail-only 关键词会返回 0（如 `index.meta.json`、`t-g104`）。现在分页查询和 `total` 计数都使用 `summary OR detail`，实测 task 5：`index.meta.json` 0→8、`t-g104` 0→9、`cloudfunction` 2→36、`corehr` 4→16、`mail` 11→89。查询仍按 `exploration_id + kind` 索引只扫本任务及直接来源任务；详情命中时摘要可能不含关键词，需 `node_detail(id)` 看全文。
+
+- **移除「报告规则」（scope=report）约束**：报告/取证要求（Python PoC 的 `-p/--proxy`、`verify=False` 等）已由代码级 guidance 与 reporter 提示词负责，不再作为任务约束类型。`task_constraints.scope` 只保留 operation/rating；旧库的 report 行迁移为 `superseded` 的 operation 历史（不删除、不再注入）；goals 提示词、`set_constraints` 工具描述和前端约束管理同步移除 report；存量库通过 `goals_prompt_no_report_scope_v1` 与 `tool_schema_refresh_v13_no_report_scope` 一次性刷新。
+- **定级口径改为按需读取**：不再把整段 rating 条款内联进 planner/worker 的 system prompt（45 条评测模板约 1.7k–2.5k tokens，worker/planner 每次 run 都会重复计入）。`constraintBlock` 只保留一行「调用 get_rating_criteria」的提示；agent 在评级或规划需要判断严重度时自行读取条款。`report_finding` 仍要求引用 `rating_clause_id` 或说明 `rating_basis`；存量库通过 `tool_schema_refresh_v14_rating_on_demand` 刷新工具描述。
 
 ### 修复
 

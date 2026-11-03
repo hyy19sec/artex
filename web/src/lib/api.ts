@@ -71,6 +71,9 @@ import type {
   NotificationMeta,
   PromptVar,
   PromptVersion,
+  RatingCriteria,
+  RatingTemplate,
+  RatingTemplateInput,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -253,6 +256,7 @@ export const api = {
     categoryId?: number;
     description: string;
     goal: string;
+    ratingTemplateId?: number;
     llmProfileIds?: number[];
     sourceTaskIds?: string[];
     companyIds?: number[];
@@ -267,6 +271,7 @@ export const api = {
       category_id: input.categoryId ?? null,
       description: input.description,
       goal: input.goal,
+      rating_template_id: input.ratingTemplateId ?? null,
       llm_profile_ids: input.llmProfileIds ?? [],
       source_task_ids: input.sourceTaskIds ?? [],
       company_ids: input.companyIds ?? [],
@@ -292,6 +297,14 @@ export const api = {
       category_id: categoryId ?? null,
     }),
   taskTemplates: () => get<{ templates: TaskTemplate[] }>("/task-templates").then((r) => arr(r.templates)),
+  ratingTemplates: () => get<{ templates: RatingTemplate[] }>("/rating-templates").then((r) => arr(r.templates)),
+  createRatingTemplate: (input: RatingTemplateInput) => post<RatingTemplate>("/rating-templates", input),
+  updateRatingTemplate: (id: number, input: RatingTemplateInput) =>
+    put<RatingTemplate>(`/rating-templates/${id}`, input),
+  deleteRatingTemplate: (id: number) => del<{ deleted: boolean }>(`/rating-templates/${id}`),
+  taskRatingCriteria: (id: string) => get<RatingCriteria>(`/tasks/${id}/rating-criteria`),
+  applyRatingTemplate: (id: string, templateId: number, mode: "replace" | "append" = "replace") =>
+    post<{ ok: boolean; added: number }>(`/tasks/${id}/rating-template`, { template_id: templateId, mode }),
   createTaskTemplate: (
     input: Pick<TaskTemplate, "name" | "description" | "goal" | "category_id" | "intercept_rules">,
   ) => post<TaskTemplate>("/task-templates", input),
@@ -406,7 +419,7 @@ export const api = {
   // 新增约束（不通知 planner，下一轮规划自然读到）。
   addConstraint: (id: string, text: string, kind: TaskConstraint["kind"], scope?: TaskConstraint["scope"]) =>
     post<TaskConstraint>(`/tasks/${id}/constraints`, { text, kind, scope }),
-  // 修改约束（文本 + allow/deny + operation/rating/report）。
+  // 修改约束（文本 + allow/deny + operation/rating）。
   updateConstraint: (
     id: string,
     constraintId: string,

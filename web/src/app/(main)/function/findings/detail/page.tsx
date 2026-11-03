@@ -174,6 +174,22 @@ function FindingDetailInner() {
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
                 </CardContent>
               </Card>
+              {(finding.rating_clause_text || finding.rating_basis) && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">评级依据</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    {finding.rating_clause_id && (
+                      <p className="text-muted-foreground text-xs">引用定级条款 #{finding.rating_clause_id}</p>
+                    )}
+                    {finding.rating_clause_text && <p className="whitespace-pre-wrap">{finding.rating_clause_text}</p>}
+                    {finding.rating_basis && (
+                      <p className="text-muted-foreground whitespace-pre-wrap">{finding.rating_basis}</p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
               <FindingRetestPanel key={id} findingId={id} readOnly={finding.inherited} onCompleted={load} />
               <Card>
                 <CardHeader>

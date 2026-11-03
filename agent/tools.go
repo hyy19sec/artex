@@ -1448,12 +1448,33 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 		})
 }
 
+// getRatingCriteria exposes the task's active rating clauses (and selected
+// template) so rating agents can cite a concrete clause id in report_finding.
+func (t *ToolSet) getRatingCriteria() actool.CoreTool {
+	return t.readExpTool("get_rating_criteria",
+		"读取本任务的定级口径：当前评级模板 + 所有生效的 scope=rating 条款（id/kind/text）。"+
+			"定级口径不在 system prompt 中内联：评级或规划需要判断漏洞等级时，先调用本工具读取条款；"+
+			"report_finding 的 rating_clause_id 引用这里返回的 id；没有匹配条款时用 rating_basis 说明原因，"+
+			"并优先把不达 finding 门槛的观察写成 record_fact 而不是硬报漏洞。",
+		obj(map[string]any{}),
+		func(_ context.Context, _ json.RawMessage) (actool.Result, error) {
+			criteria, err := t.ts.RatingCriteria()
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(criteria)
+		})
+}
+
 // --- worker write tools ---
 
 func (t *ToolSet) addFinding() actool.CoreTool {
-	return writeTool("report_finding", "记录确认的漏洞，用 evidence 提供命令输出、日志等可验证证据。任务上下文传当前 intent_id。返回的 finding_id 是独立漏洞记录 ID，finding_node_id 是探索节点 ID（第一行保留该节点编号）。", obj(map[string]any{
+	return writeTool("report_finding", "记录确认的漏洞，用 evidence 提供命令输出、日志等可验证证据。任务上下文传当前 intent_id。返回的 finding_id 是独立漏洞记录 ID，finding_node_id 是探索节点 ID（第一行保留该节点编号）。\n"+
+		"★定级口径不在 system prompt 中内联：评级前先调用 get_rating_criteria 读取条款；有匹配条款时传 rating_clause_id（其返回的 id）；没有匹配条款时传 0 并用 rating_basis 说明依据；不达 finding 门槛的观察用 record_fact，不要硬报。", obj(map[string]any{
 		"vulnclass": str("漏洞类别"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
+		"rating_clause_id": idp("可选/条件必填：引用 get_rating_criteria 返回的定级条款 id。没有匹配条款时传 0 并写 rating_basis"),
+		"rating_basis":     str("可选/条件必填：未匹配条款时的评级依据文本（先调用 get_rating_criteria 确认；例如模板未覆盖、按通用高危定义判定）"),
 		"evidence":         str("证据/PoC 文本"),
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。",
@@ -1461,6 +1482,8 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
 			VulnClass, Name, Severity, Summary, Evidence string
+			RatingBasis                                  string            `json:"rating_basis"`
+			RatingClauseID                               json.RawMessage   `json:"rating_clause_id"`
 			IntentID                                     json.RawMessage   `json:"intent_id"`
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
@@ -1471,6 +1494,31 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
+		}
+		// 评级依据：有生效 rating 条款时，必须引用其中一条或写明未匹配依据。
+		ratingClauseID := pid(a.RatingClauseID)
+		ratingBasis := strings.TrimSpace(a.RatingBasis)
+		var ratingClauseText string
+		activeRating, ratingErr := t.ts.ActiveRatingConstraints()
+		if ratingErr != nil {
+			return actool.Errorf("读取定级口径失败: " + ratingErr.Error()), nil
+		}
+		if len(activeRating) > 0 {
+			if ratingClauseID <= 0 && ratingBasis == "" {
+				return actool.Errorf("评级前请先调用 get_rating_criteria 读取定级口径：传 rating_clause_id（其返回的 id）或 rating_basis（未匹配条款时说明依据）"), nil
+			}
+			if ratingClauseID > 0 {
+				found := false
+				for _, c := range activeRating {
+					if c.ID == ratingClauseID {
+						ratingClauseText, found = c.Text, true
+						break
+					}
+				}
+				if !found {
+					return actool.Errorf(fmt.Sprintf("rating_clause_id=%d 不是本任务生效的定级条款；请调用 get_rating_criteria 重新读取", ratingClauseID)), nil
+				}
+			}
 		}
 		// Auto-binding off: ignore the evidence params instead of rejecting the call.
 		// stripTrafficParameters already removes them from the advertised schema, but
@@ -1487,7 +1535,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), RatingClauseID: ratingClauseID, RatingClauseText: ratingClauseText, RatingBasis: ratingBasis}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -1586,6 +1634,7 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 
 func (t *ToolSet) recordFact() actool.CoreTool {
 	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。用于记录探索结果——包括指纹/枚举等【正向结论】，和'端口关闭'/'参数不可注入'/'未发现登录入口'等【否定结论】。\n"+
+		"★先按定级口径判断结论形态：达到 finding 门槛且有可复现证据 → report_finding（引用 rating_clause_id）；否定/不确定/线索 → 本工具（confidence=observed/inferred），不要硬报 finding。\n"+
 		"⚠️一次探索的多个观察要【汇总成一条事实】，不要拆成多条，可以合并成一条事实的就尽量用一条事实表示：summary=对本次结论的总结性一句话，detail=相关细节（可含多个具体项）。例：指纹意图→一条事实 {summary:'识别了 X 站点的技术栈与响应特征', detail:'nginx 1.25 / Vue3 / 200 / title=.. / body_len=..'}，而不是状态码、指纹、标题各记一条。一条意图通常只产出一条事实，拆太碎会让图谱无限膨胀。\n"+
 		"★facts 数组用于一次写多条【彼此不同】的结论（每条可省略 intent_id，默认用顶层 intent_id）。返回 ids 数组，与 facts 等长同序。\n"+
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
@@ -1776,7 +1825,7 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 type constraintItem struct {
 	Text         string `json:"text"`
 	Type         string `json:"type"`          // allow | deny
-	Scope        string `json:"scope"`         // operation | rating | report
+	Scope        string `json:"scope"`         // operation | rating
 	SupersedesID int64  `json:"supersedes_id"` // >0 = 新版本替代旧约束
 }
 
@@ -1802,9 +1851,9 @@ func (t *ToolSet) addOneConstraint(it constraintItem) (int64, error) {
 // 端改描述/schema、按 agent 绑定。约束会被注入 planner/worker 的系统提示以约束探索边界。
 func (t *ToolSet) setConstraints() actool.CoreTool {
 	return writeTool("set_constraints",
-		"给【本任务】新增约束。scope 区分三类：operation=能/不能做哪些操作（授权边界）；rating=定级口径（评分参考，不是授权）；report=报告/取证要求（只在报告阶段生效）。\n"+
+		"给【本任务】新增约束。scope 区分两类：operation=能/不能做哪些操作（授权边界）；rating=定级口径（评分参考，不是授权）。\n"+
 			"约束不是目标、也不是攻击步骤；只登记任务目标/描述里【明确写出】的内容，不要臆造。\n"+
-			"★不要把整份评级标准塞进 operation：评级条款用 scope=rating 逐条登记，或只登记一条「定级依据：<文件路径>」；报告要求用 scope=report。\n"+
+			"★不要把整份评级标准塞进 operation：评级条款用 scope=rating 逐条登记，或只登记一条「定级依据：<文件路径>」。\n"+
 			"★优先批量：多条放进 constraints 数组一次提交，返回 ids 与之等长同序（失败项 id=0，详情见 errors）。单条则省略 constraints 直接给顶层 text/type/scope/supersedes_id。\n"+
 			"用 supersedes_id 替代旧约束：旧行会被标记 superseded，不再注入提示词。拿不准 type 时用 deny；拿不准 scope 时用 operation。",
 		obj(map[string]any{
@@ -1814,13 +1863,13 @@ func (t *ToolSet) setConstraints() actool.CoreTool {
 				"items": obj(map[string]any{
 					"text":          str("约束内容"),
 					"type":          str("allow(允许)或 deny(禁止)"),
-					"scope":         str("operation|rating|report；缺省 operation"),
+					"scope":         str("operation|rating；缺省 operation"),
 					"supersedes_id": intp("可选：被替代的旧约束 id；旧行会被标记 superseded"),
 				}, "text"),
 			},
 			"text":          str("[单条] 一条约束的内容"),
 			"type":          str("[单条] allow(允许)或 deny(禁止);缺省按 deny 处理"),
-			"scope":         str("[单条] operation|rating|report；缺省 operation"),
+			"scope":         str("[单条] operation|rating；缺省 operation"),
 			"supersedes_id": intp("[单条] 可选：被替代的旧约束 id"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -2280,7 +2329,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 // PlannerTools is the read + intent-generation + goal-judgement tool set.
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	return []actool.CoreTool{
-		t.graphOverview(), t.listFindings(), t.listFacts(), t.listIntents(), t.listFindingQuota(), t.nodeDetail(),
+		t.graphOverview(), t.listFindings(), t.listFacts(), t.listIntents(), t.listFindingQuota(), t.getRatingCriteria(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),

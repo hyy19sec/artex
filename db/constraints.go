@@ -8,16 +8,15 @@ import (
 )
 
 // Constraint is one task-scoped constraint. kind is allow|deny; scope separates
-// three different things that used to be mixed into one allow/deny list:
+// two different things that used to be mixed into one allow/deny list:
 //   - operation: what the operator may/may not do (authorization boundary);
-//   - rating:    how to grade a finding (reference only, NOT authorization);
-//   - report:    report/evidence requirements (only at report time).
+//   - rating:    how to grade a finding (reference only, NOT authorization).
 //
 // status=superseded rows stay in history but are not injected into prompts.
 type Constraint struct {
 	ID           int64     `json:"id"`
 	Kind         string    `json:"kind"`  // allow | deny
-	Scope        string    `json:"scope"` // operation | rating | report
+	Scope        string    `json:"scope"` // operation | rating
 	Text         string    `json:"text"`
 	Origin       string    `json:"origin,omitempty"` // goals | human | system
 	Status       string    `json:"status"`           // active | superseded
@@ -31,10 +30,10 @@ func normalizeConstraintScope(scope string) (string, error) {
 		return "operation", nil
 	}
 	switch scope {
-	case "operation", "rating", "report":
+	case "operation", "rating":
 		return scope, nil
 	default:
-		return "", fmt.Errorf("scope 必须是 operation、rating 或 report")
+		return "", fmt.Errorf("scope 必须是 operation 或 rating")
 	}
 }
 

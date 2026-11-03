@@ -54,6 +54,7 @@ type TaskDTO struct {
 	InFlight           int                `json:"in_flight"`                // 运行中 Worker 数（state=running 的意图）
 	Findings           FindingSeverityDTO `json:"findings"`                 // 该任务已登记的漏洞数（findings 表，按严重度分档）
 	LLMProfileID       *int64             `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
+	RatingTemplateID   *int64             `json:"rating_template_id,omitempty"`
 	LLMProfileIDs      []int64            `json:"llm_profile_ids"`
 	ActiveLLMProfileID *int64             `json:"active_llm_profile_id,omitempty"`
 	LLMFailoverState   string             `json:"llm_failover_state"`
@@ -129,6 +130,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		ScheduledPause:     lifecycle.ScheduledPause,
 		Queued:             lifecycle.Queued,
 		LLMProfileID:       llmState.ProfileID,
+		RatingTemplateID:   t.RatingTemplateID,
 		LLMProfileIDs:      profileIDs,
 		ActiveLLMProfileID: llmState.ActiveID,
 		LLMFailoverState:   llmState.FailoverState,
@@ -248,7 +250,7 @@ func goalDTOs(in []*db.Node) []GoalDTO {
 type ConstraintDTO struct {
 	ID           string `json:"id"`
 	Kind         string `json:"kind"`  // allow | deny
-	Scope        string `json:"scope"` // operation | rating | report
+	Scope        string `json:"scope"` // operation | rating
 	Text         string `json:"text"`
 	Origin       string `json:"origin,omitempty"`
 	Status       string `json:"status"`                  // active | superseded
@@ -323,6 +325,10 @@ type FindingDTO struct {
 	Summary   string `json:"summary"`
 	Evidence  string `json:"evidence"`
 	Report    string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	// 评级依据：条款快照 id/文本，或未匹配条款时的自由文本。
+	RatingClauseID   string `json:"rating_clause_id,omitempty"`
+	RatingClauseText string `json:"rating_clause_text,omitempty"`
+	RatingBasis      string `json:"rating_basis,omitempty"`
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`
@@ -375,11 +381,14 @@ func assetLabel(a *db.Asset) string {
 // findingPayload mirrors the JSON written by the worker's report_finding tool
 // (agent/tools.go addFinding): {vulnclass, severity, summary, evidence:{by,poc}}.
 type findingPayload struct {
-	VulnClass string          `json:"vulnclass"`
-	Name      string          `json:"name"`
-	Severity  string          `json:"severity"`
-	Summary   string          `json:"summary"`
-	Evidence  json.RawMessage `json:"evidence"`
+	VulnClass        string          `json:"vulnclass"`
+	Name             string          `json:"name"`
+	Severity         string          `json:"severity"`
+	Summary          string          `json:"summary"`
+	Evidence         json.RawMessage `json:"evidence"`
+	RatingClauseID   int64           `json:"rating_clause_id"`
+	RatingClauseText string          `json:"rating_clause_text"`
+	RatingBasis      string          `json:"rating_basis"`
 }
 
 func findingDTO(n *db.Node) FindingDTO {
@@ -395,6 +404,11 @@ func findingDTO(n *db.Node) FindingDTO {
 		Evidence:  rawString(p.Evidence),
 		TS:        rfc3339(n.CreatedAt),
 	}
+	if p.RatingClauseID > 0 {
+		d.RatingClauseID = i64s(p.RatingClauseID)
+	}
+	d.RatingClauseText = p.RatingClauseText
+	d.RatingBasis = p.RatingBasis
 	if n.SourceTaskID > 0 {
 		d.SourceTaskID = i64s(n.SourceTaskID)
 	}
@@ -462,6 +476,11 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		Report:    f.Report,
 		TS:        rfc3339(f.CreatedAt),
 	}
+	if f.RatingClauseID > 0 {
+		d.RatingClauseID = i64s(f.RatingClauseID)
+	}
+	d.RatingClauseText = f.RatingClauseText
+	d.RatingBasis = f.RatingBasis
 	d.Assets = findingAssetDTOs(f.AssetIDs, assets)
 	if f.TaskID != nil {
 		d.TaskID = i64s(*f.TaskID)
