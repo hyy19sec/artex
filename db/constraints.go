@@ -88,6 +88,22 @@ func (s *ExplorationStore) AddConstraint(kind, scope, text, origin string, super
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Idempotent insert: template snapshots and the goals decomposer often derive
+	// the same clause. Return the existing active row instead of duplicating it.
+	// supersedes_id is an explicit replacement, so skip dedupe in that case.
+	if supersedesID <= 0 {
+		var existing int64
+		err := tx.QueryRow(`SELECT id FROM task_constraints
+WHERE exploration_id=$1 AND scope=$2 AND kind=$3 AND text=$4 AND status='active'
+ORDER BY id LIMIT 1`, s.expID, scope, kind, text).Scan(&existing)
+		if err == nil {
+			return existing, nil
+		}
+		if err != sql.ErrNoRows {
+			return 0, err
+		}
+	}
+
 	var id int64
 	err = tx.QueryRow(`
 INSERT INTO task_constraints(exploration_id, kind, scope, text, origin, status, supersedes_id)

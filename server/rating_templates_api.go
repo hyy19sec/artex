@@ -9,9 +9,10 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-// 漏洞评级模板（全局参考数据）+ 任务应用模板/读取定级口径。
-// 模板是快照来源：任务创建或手动应用时复制条款到 task_constraints(scope='rating')，
-// report_finding 的 rating_clause_id 引用的是快照行 id，不是模板条款 id。
+// 测评模板（全局参考数据）+ 任务应用模板/读取定级口径。
+// 模板是快照来源：任务创建或手动应用时按条款 scope 复制到
+// task_constraints(scope='rating'|'operation')；report_finding 的 rating_clause_id
+// 引用的是 rating 快照行 id，不是模板条款 id。表名沿用 rating_templates 以兼容旧库。
 
 func (s *Server) listRatingTemplates(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.m.PG().ListRatingTemplates()
@@ -50,7 +51,7 @@ func (s *Server) updateRatingTemplate(w http.ResponseWriter, r *http.Request) {
 	t, err := s.m.PG().UpdateRatingTemplate(id, in)
 	if err != nil {
 		if errors.Is(err, db.ErrRatingTemplateNotFound) {
-			writeErr(w, 404, "评级模板不存在")
+			writeErr(w, 404, "测评模板不存在")
 			return
 		}
 		writeErr(w, 400, err.Error())
@@ -92,9 +93,9 @@ func (s *Server) taskRatingCriteria(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, criteria)
 }
 
-// setTaskRatingTemplate snapshots a template into an existing task's rating
-// constraints. mode=replace supersedes current active rating rows; mode=append
-// only adds clauses not already active.
+// setTaskRatingTemplate snapshots a template into an existing task's constraints.
+// mode=replace supersedes active rating rows and template-sourced operation rows;
+// mode=append only adds clauses not already active.
 func (s *Server) setTaskRatingTemplate(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -102,7 +103,7 @@ func (s *Server) setTaskRatingTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.engine.beginTaskOperation(t.ID) {
-		writeErr(w, 409, "任务正在删除,无法修改评级模板")
+		writeErr(w, 409, "任务正在删除,无法修改测评模板")
 		return
 	}
 	defer s.engine.decInflight(t.ID)
@@ -132,7 +133,7 @@ func (s *Server) setTaskRatingTemplate(w http.ResponseWriter, r *http.Request) {
 	added, err := s.m.PG().ApplyRatingTemplate(t.ExpID, body.TemplateID, replace)
 	if err != nil {
 		if errors.Is(err, db.ErrRatingTemplateNotFound) {
-			writeErr(w, 404, "评级模板不存在")
+			writeErr(w, 404, "测评模板不存在")
 			return
 		}
 		writeErr(w, 400, err.Error())

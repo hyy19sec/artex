@@ -150,7 +150,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [editingConId, setEditingConId] = React.useState<string | null>(null);
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
-  // 漏洞评级模板：任务创建时可能已选；这里可重新应用/追加，模板条款会快照进定级口径。
+  // 测评模板：任务创建时可能已选；这里可重新应用/追加，模板条款会按 scope 快照进定级口径与操作约束。
   const [ratingTemplates, setRatingTemplates] = React.useState<RatingTemplate[]>([]);
   const [ratingTemplateID, setRatingTemplateID] = React.useState<number | undefined>(undefined);
   const [ratingTemplateBusy, setRatingTemplateBusy] = React.useState(false);
@@ -635,14 +635,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             <span className="text-muted-foreground text-xs font-normal">
               （操作授权，共 {operationConstraints.length} 条
               {supersededOperationCount > 0 ? `，已隐藏 ${supersededOperationCount} 条历史` : ""}
-              ；定级口径由上方模板管理）
+              ；定级口径与模板操作约束由上方「测评模板」管理）
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {/* 评级模板：把模板条款快照进「定级口径」。任务创建时选中的模板也会在这里显示。 */}
+          {/* 测评模板：把模板条款按 scope 快照进「定级口径」与「操作约束」。任务创建时选中的模板也会在这里显示。 */}
           <div className="flex flex-wrap items-center gap-2 rounded-md border p-2">
-            <span className="text-sm font-medium">定级口径模板</span>
+            <span className="text-sm font-medium">测评模板</span>
             <NativeSelect
               size="sm"
               value={ratingTemplateID != null ? String(ratingTemplateID) : ""}
@@ -672,7 +672,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               追加
             </Button>
             <span className="text-muted-foreground text-xs">
-              模板条款会快照成本任务的 rating 约束；之后改模板不影响已建任务。
+              模板条款会按 scope 快照成本任务的定级口径与操作约束；之后改模板不影响已建任务。
             </span>
           </div>
           {/* 新增表单 */}

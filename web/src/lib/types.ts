@@ -478,7 +478,8 @@ export interface RatingTemplateClause {
   id: number;
   template_id?: number;
   code: string; // 严重-1 / 高危-2 / 忽略-1 ...
-  kind: ConstraintKind; // allow=计入 / deny=不收取
+  kind: ConstraintKind; // allow=计入/允许 / deny=忽略/禁止
+  scope?: ConstraintScope; // operation=操作约束 / rating=定级口径
   text: string;
   sort_order: number;
 }
@@ -496,7 +497,7 @@ export interface RatingTemplate {
 export interface RatingTemplateInput {
   name: string;
   description: string;
-  clauses: Array<{ code: string; kind: ConstraintKind; text: string; sort_order?: number }>;
+  clauses: Array<{ code: string; kind: ConstraintKind; scope?: ConstraintScope; text: string; sort_order?: number }>;
 }
 
 export interface RatingCriteria {

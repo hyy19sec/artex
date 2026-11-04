@@ -30,11 +30,21 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { ConstraintKind, RatingTemplate, RatingTemplateInput } from "@/lib/types";
+import type { ConstraintKind, ConstraintScope, RatingTemplate, RatingTemplateInput } from "@/lib/types";
 
-type ClauseDraft = { code: string; kind: ConstraintKind; text: string };
+type ClauseDraft = { code: string; kind: ConstraintKind; scope: ConstraintScope; text: string };
 
-const emptyClause = (): ClauseDraft => ({ code: "", kind: "allow", text: "" });
+const emptyClause = (scope: ConstraintScope = "rating"): ClauseDraft => ({
+  code: "",
+  kind: scope === "rating" ? "allow" : "deny",
+  scope,
+  text: "",
+});
+
+function clauseKindLabel(scope: ConstraintScope, kind: ConstraintKind): string {
+  if (scope === "operation") return kind === "allow" ? "允许" : "禁止";
+  return kind === "allow" ? "计入" : "忽略";
+}
 
 export default function RatingTemplatesPage() {
   const [templates, setTemplates] = React.useState<RatingTemplate[]>([]);
@@ -52,7 +62,7 @@ export default function RatingTemplatesPage() {
     try {
       setTemplates(await api.ratingTemplates());
     } catch (e) {
-      toast.error("加载评级模板失败：" + (e as Error).message);
+      toast.error("加载测评模板失败：" + (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -66,7 +76,7 @@ export default function RatingTemplatesPage() {
     setEditing(null);
     setName("");
     setDescription("");
-    setClauses([emptyClause()]);
+    setClauses([emptyClause("rating")]);
     setOpen(true);
   }
 
@@ -78,6 +88,7 @@ export default function RatingTemplatesPage() {
       (t.clauses ?? []).map((c) => ({
         code: c.code,
         kind: c.kind,
+        scope: c.scope ?? "rating",
         text: c.text,
       })),
     );
@@ -93,6 +104,7 @@ export default function RatingTemplatesPage() {
       clauses: (t.clauses ?? []).map((c, i) => ({
         code: c.code,
         kind: c.kind,
+        scope: c.scope ?? "rating",
         text: c.text,
         sort_order: i,
       })),
@@ -101,7 +113,7 @@ export default function RatingTemplatesPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${t.name.replace(/[\\/:*?"<>|]/g, "_")}-评级模板.json`;
+    a.download = `${t.name.replace(/[\\/:*?"<>|]/g, "_")}-测评模板.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -113,7 +125,7 @@ export default function RatingTemplatesPage() {
       const raw = JSON.parse(await file.text()) as {
         name?: unknown;
         description?: unknown;
-        clauses?: Array<{ code?: unknown; kind?: unknown; text?: unknown }>;
+        clauses?: Array<{ code?: unknown; kind?: unknown; scope?: unknown; text?: unknown }>;
       };
       const input: RatingTemplateInput = {
         name: String(raw.name ?? "").trim(),
@@ -122,6 +134,7 @@ export default function RatingTemplatesPage() {
           .map((c, i) => ({
             code: String(c.code ?? "").trim(),
             kind: c.kind === "deny" ? ("deny" as const) : ("allow" as const),
+            scope: c.scope === "operation" ? ("operation" as const) : ("rating" as const),
             text: String(c.text ?? "").trim(),
             sort_order: i,
           }))
@@ -155,7 +168,7 @@ export default function RatingTemplatesPage() {
 
   async function save() {
     const cleaned = clauses
-      .map((c) => ({ code: c.code.trim(), kind: c.kind, text: c.text.trim() }))
+      .map((c) => ({ code: c.code.trim(), kind: c.kind, scope: c.scope, text: c.text.trim() }))
       .filter((c) => c.text !== "");
     if (!name.trim()) {
       toast.error("请填写模板名称");
@@ -189,7 +202,7 @@ export default function RatingTemplatesPage() {
   }
 
   async function remove(t: RatingTemplate) {
-    if (!window.confirm(`删除评级模板「${t.name}」？已建任务里的定级口径快照不受影响。`)) return;
+    if (!window.confirm(`删除测评模板「${t.name}」？已建任务里的定级口径与操作约束快照不受影响。`)) return;
     try {
       await api.deleteRatingTemplate(t.id);
       toast.success("模板已删除");
@@ -204,10 +217,11 @@ export default function RatingTemplatesPage() {
       <div className="flex flex-wrap items-center gap-2">
         <div>
           <h1 className="flex items-center gap-2 font-semibold text-lg">
-            <ScaleIcon className="size-5 text-primary" /> 漏洞评级模板
+            <ScaleIcon className="size-5 text-primary" /> 测评模板
           </h1>
           <p className="text-muted-foreground text-sm">
-            可复用的定级口径。任务创建或任务详情「应用模板」时会把条款快照进任务的定级口径；之后编辑模板不会影响已建任务。
+            可复用的定级口径与操作约束。任务创建或任务详情「应用模板」时会把各条款按 scope
+            快照进任务；之后编辑模板不会影响已建任务。
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -235,7 +249,7 @@ export default function RatingTemplatesPage() {
       ) : templates.length === 0 ? (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground text-sm">
-            暂无评级模板，点击「新建模板」创建。
+            暂无测评模板，点击「新建模板」创建。
           </CardContent>
         </Card>
       ) : (
@@ -251,15 +265,26 @@ export default function RatingTemplatesPage() {
                 <CardDescription>{t.description || "—"}</CardDescription>
               </CardHeader>
               <CardContent className="flex-1">
-                <div className="flex max-h-40 flex-col gap-1 overflow-y-auto text-sm">
-                  {(t.clauses ?? []).map((c) => (
-                    <div key={c.id} className="flex gap-2">
-                      <Badge variant={c.kind === "allow" ? "default" : "outline"} className="shrink-0">
-                        {c.code || (c.kind === "allow" ? "计入" : "不收取")}
-                      </Badge>
-                      <span className="text-muted-foreground line-clamp-2">{c.text}</span>
-                    </div>
-                  ))}
+                <div className="flex max-h-40 flex-col gap-2 overflow-y-auto text-sm">
+                  {(["rating", "operation"] as const).map((scope) => {
+                    const list = (t.clauses ?? []).filter((c) => (c.scope ?? "rating") === scope);
+                    if (list.length === 0) return null;
+                    return (
+                      <div key={scope} className="flex flex-col gap-1">
+                        <div className="text-muted-foreground text-xs font-medium">
+                          {scope === "rating" ? "定级条款" : "操作约束"} · {list.length}
+                        </div>
+                        {list.map((c) => (
+                          <div key={c.id} className="flex gap-2">
+                            <Badge variant={c.kind === "allow" ? "default" : "outline"} className="shrink-0">
+                              {c.code || clauseKindLabel(scope, c.kind)}
+                            </Badge>
+                            <span className="text-muted-foreground line-clamp-2">{c.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </CardContent>
               <CardContent className="flex flex-wrap gap-2 border-t pt-3">
@@ -282,9 +307,10 @@ export default function RatingTemplatesPage() {
         <DialogContent className="max-w-[min(1500px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(1500px,calc(100vw-2rem))]">
           <div className="flex max-h-[85dvh] flex-col">
             <DialogHeader className="border-b p-6">
-              <DialogTitle>{editing ? "编辑评级模板" : "新建评级模板"}</DialogTitle>
+              <DialogTitle>{editing ? "编辑测评模板" : "新建测评模板"}</DialogTitle>
               <DialogDescription>
-                条款按顺序注入任务的定级口径；kind=计入 表示可计入目标，kind=不收取 表示忽略/不纳入。
+                定级条款进入任务的定级口径（按需读取）；操作约束会内联进 planner/worker
+                系统提示词，必须写成可执行的允许/禁止边界。
               </DialogDescription>
             </DialogHeader>
             <div className="flex-1 space-y-4 overflow-y-auto p-6">
@@ -309,37 +335,69 @@ export default function RatingTemplatesPage() {
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <Label>条款</Label>
-                  <Button size="sm" variant="outline" onClick={() => setClauses((prev) => [...prev, emptyClause()])}>
-                    <PlusIcon /> 添加条款
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setClauses((prev) => [...prev, emptyClause("rating")])}
+                    >
+                      <PlusIcon /> 添加定级条款
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setClauses((prev) => [...prev, emptyClause("operation")])}
+                    >
+                      <PlusIcon /> 添加操作约束
+                    </Button>
+                  </div>
                 </div>
                 <div className="flex flex-col overflow-hidden rounded-md border">
                   {clauses.map((c, i) => (
-                    <div key={i} className="flex flex-wrap items-center gap-1 border-b bg-muted/20 p-1 last:border-b-0">
-                      <span className="text-muted-foreground w-5 shrink-0 text-xs tabular-nums">#{i + 1}</span>
+                    <div
+                      key={i}
+                      className="flex flex-wrap items-center gap-0.5 border-b bg-muted/20 px-1 py-0.5 last:border-b-0"
+                    >
+                      <span className="text-muted-foreground w-5 shrink-0 text-center text-[11px] tabular-nums">
+                        #{i + 1}
+                      </span>
+                      <NativeSelect
+                        size="sm"
+                        className="w-[4.5rem]"
+                        value={c.scope}
+                        onChange={(e) => updateClause(i, { scope: e.target.value as ConstraintScope })}
+                      >
+                        <NativeSelectOption value="rating">定级</NativeSelectOption>
+                        <NativeSelectOption value="operation">操作</NativeSelectOption>
+                      </NativeSelect>
                       <Input
-                        className="w-24"
+                        className="h-7 w-[4.5rem] px-2 text-xs"
                         value={c.code}
                         onChange={(e) => updateClause(i, { code: e.target.value })}
-                        placeholder="严重-1"
+                        placeholder={c.scope === "rating" ? "严重-1" : "可选"}
                       />
                       <NativeSelect
-                        className="w-20"
+                        size="sm"
+                        className="w-[4.5rem]"
                         value={c.kind}
                         onChange={(e) => updateClause(i, { kind: e.target.value as ConstraintKind })}
                       >
-                        <NativeSelectOption value="allow">计入</NativeSelectOption>
-                        <NativeSelectOption value="deny">不收取</NativeSelectOption>
+                        <NativeSelectOption value="allow">{clauseKindLabel(c.scope, "allow")}</NativeSelectOption>
+                        <NativeSelectOption value="deny">{clauseKindLabel(c.scope, "deny")}</NativeSelectOption>
                       </NativeSelect>
                       <Textarea
                         rows={1}
-                        className="field-sizing-fixed min-h-10 max-h-40 min-w-64 flex-1 resize-y px-2.5 py-1"
+                        className="field-sizing-content min-h-7 max-h-40 min-w-48 flex-1 resize-y px-2 py-1 leading-5"
                         value={c.text}
                         title={c.text}
                         onChange={(e) => updateClause(i, { text: e.target.value })}
-                        placeholder="条款内容，例如：直接获取服务器/系统权限（RCE、命令执行、提权…）"
+                        placeholder={
+                          c.scope === "rating"
+                            ? "条款内容，例如：直接获取服务器/系统权限（RCE、命令执行、提权…）"
+                            : "操作边界，例如：SSRF 仅证明可达性，不得批量扫描内网"
+                        }
                       />
                       <div className="ml-auto flex items-center gap-0.5">
                         <Button

@@ -29,8 +29,9 @@ type RatingTemplate struct {
 type RatingTemplateClause struct {
 	ID         int64  `json:"id"`
 	TemplateID int64  `json:"template_id"`
-	Code       string `json:"code"` // 严重-1 / 高危-2 / 忽略-1 ...
-	Kind       string `json:"kind"` // allow(计入) | deny(不收取/忽略)
+	Code       string `json:"code"`  // 严重-1 / 高危-2 / 忽略-1 ...
+	Kind       string `json:"kind"`  // allow(计入/允许) | deny(不收取/禁止)
+	Scope      string `json:"scope"` // operation(操作约束) | rating(定级口径)
 	Text       string `json:"text"`
 	SortOrder  int    `json:"sort_order"`
 }
@@ -46,6 +47,7 @@ type RatingTemplateInput struct {
 type RatingTemplateClauseInput struct {
 	Code      string `json:"code"`
 	Kind      string `json:"kind"`
+	Scope     string `json:"scope"`
 	Text      string `json:"text"`
 	SortOrder int    `json:"sort_order"`
 }
@@ -53,12 +55,19 @@ type RatingTemplateClauseInput struct {
 func normalizeTemplateClause(in RatingTemplateClauseInput) (RatingTemplateClauseInput, error) {
 	in.Code = strings.TrimSpace(in.Code)
 	in.Kind = strings.ToLower(strings.TrimSpace(in.Kind))
+	in.Scope = strings.ToLower(strings.TrimSpace(in.Scope))
 	in.Text = strings.TrimSpace(in.Text)
 	if in.Kind == "" {
 		in.Kind = "allow"
 	}
 	if in.Kind != "allow" && in.Kind != "deny" {
 		return in, fmt.Errorf("条款 kind 必须是 allow 或 deny")
+	}
+	if in.Scope == "" {
+		in.Scope = "rating"
+	}
+	if in.Scope != "operation" && in.Scope != "rating" {
+		return in, fmt.Errorf("条款 scope 必须是 operation 或 rating")
 	}
 	if in.Text == "" {
 		return in, fmt.Errorf("条款 text 不能为空")
@@ -115,7 +124,7 @@ FROM rating_templates ORDER BY builtin DESC, id`)
 	if len(out) == 0 {
 		return out, nil
 	}
-	cr, err := d.Query(`SELECT id, template_id, COALESCE(code,''), kind, text, sort_order
+	cr, err := d.Query(`SELECT id, template_id, COALESCE(code,''), kind, scope, text, sort_order
 FROM rating_template_clauses ORDER BY template_id, sort_order, id`)
 	if err != nil {
 		return nil, err
@@ -123,7 +132,7 @@ FROM rating_template_clauses ORDER BY template_id, sort_order, id`)
 	defer cr.Close()
 	for cr.Next() {
 		var c RatingTemplateClause
-		if err := cr.Scan(&c.ID, &c.TemplateID, &c.Code, &c.Kind, &c.Text, &c.SortOrder); err != nil {
+		if err := cr.Scan(&c.ID, &c.TemplateID, &c.Code, &c.Kind, &c.Scope, &c.Text, &c.SortOrder); err != nil {
 			return nil, err
 		}
 		if t := byID[c.TemplateID]; t != nil {
@@ -144,7 +153,7 @@ FROM rating_templates WHERE id=$1`, id).Scan(&t.ID, &t.NKey, &t.Name, &t.Descrip
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`SELECT id, template_id, COALESCE(code,''), kind, text, sort_order
+	rows, err := d.Query(`SELECT id, template_id, COALESCE(code,''), kind, scope, text, sort_order
 FROM rating_template_clauses WHERE template_id=$1 ORDER BY sort_order, id`, id)
 	if err != nil {
 		return nil, err
@@ -153,7 +162,7 @@ FROM rating_template_clauses WHERE template_id=$1 ORDER BY sort_order, id`, id)
 	t.Clauses = []RatingTemplateClause{}
 	for rows.Next() {
 		var c RatingTemplateClause
-		if err := rows.Scan(&c.ID, &c.TemplateID, &c.Code, &c.Kind, &c.Text, &c.SortOrder); err != nil {
+		if err := rows.Scan(&c.ID, &c.TemplateID, &c.Code, &c.Kind, &c.Scope, &c.Text, &c.SortOrder); err != nil {
 			return nil, err
 		}
 		t.Clauses = append(t.Clauses, c)
@@ -231,8 +240,12 @@ func (d *DB) DeleteRatingTemplate(id int64) (bool, error) {
 
 func insertTemplateClausesTx(tx *sql.Tx, templateID int64, clauses []RatingTemplateClauseInput) error {
 	for _, c := range clauses {
-		if _, err := tx.Exec(`INSERT INTO rating_template_clauses(template_id, code, kind, text, sort_order)
-VALUES ($1,$2,$3,$4,$5)`, templateID, c.Code, c.Kind, c.Text, c.SortOrder); err != nil {
+		scope := c.Scope
+		if scope == "" {
+			scope = "rating"
+		}
+		if _, err := tx.Exec(`INSERT INTO rating_template_clauses(template_id, code, kind, scope, text, sort_order)
+VALUES ($1,$2,$3,$4,$5,$6)`, templateID, c.Code, c.Kind, scope, c.Text, c.SortOrder); err != nil {
 			return err
 		}
 	}
@@ -251,7 +264,7 @@ func ratingClauseText(code, text string) string {
 }
 
 func loadTemplateClauseInputsTx(tx *sql.Tx, templateID int64) ([]RatingTemplateClauseInput, error) {
-	rows, err := tx.Query(`SELECT COALESCE(code,''), kind, text, sort_order
+	rows, err := tx.Query(`SELECT COALESCE(code,''), kind, scope, text, sort_order
 FROM rating_template_clauses WHERE template_id=$1 ORDER BY sort_order, id`, templateID)
 	if err != nil {
 		return nil, err
@@ -260,7 +273,7 @@ FROM rating_template_clauses WHERE template_id=$1 ORDER BY sort_order, id`, temp
 	var out []RatingTemplateClauseInput
 	for rows.Next() {
 		var c RatingTemplateClauseInput
-		if err := rows.Scan(&c.Code, &c.Kind, &c.Text, &c.SortOrder); err != nil {
+		if err := rows.Scan(&c.Code, &c.Kind, &c.Scope, &c.Text, &c.SortOrder); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -268,8 +281,20 @@ FROM rating_template_clauses WHERE template_id=$1 ORDER BY sort_order, id`, temp
 	return out, rows.Err()
 }
 
+// templateClauseText renders a clause for snapshotting. Rating clauses keep the
+// 【code】 prefix so the constraint block/report can display the grade without a
+// separate code column; operation clauses are plain authorization text.
+func templateClauseText(c RatingTemplateClauseInput) string {
+	if c.Scope == "rating" {
+		return ratingClauseText(c.Code, c.Text)
+	}
+	return strings.TrimSpace(c.Text)
+}
+
 // snapshotRatingTemplateTx copies a template's clauses into task_constraints for a
-// newly created task, inside the task-creation transaction.
+// newly created task, inside the task-creation transaction. Each clause keeps its
+// scope: rating clauses feed the on-demand grading rubric, operation clauses are
+// inlined into the planner/worker constraint block.
 func snapshotRatingTemplateTx(tx *sql.Tx, explorationID, templateID int64) error {
 	if templateID <= 0 {
 		return nil
@@ -288,17 +313,18 @@ func snapshotRatingTemplateTx(tx *sql.Tx, explorationID, templateID int64) error
 	origin := fmt.Sprintf("template:%d", templateID)
 	for _, c := range clauses {
 		if _, err := tx.Exec(`INSERT INTO task_constraints(exploration_id, kind, scope, text, origin)
-VALUES ($1,$2,'rating',$3,$4)`, explorationID, c.Kind, ratingClauseText(c.Code, c.Text), origin); err != nil {
+VALUES ($1,$2,$3,$4,$5)`, explorationID, c.Kind, c.Scope, templateClauseText(c), origin); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ApplyRatingTemplate copies a template into an existing task's active rating
-// constraints. replace=true supersedes all currently active rating rows first;
-// replace=false appends only clauses whose text is not already active.
-// It also updates tasks.rating_template_id.
+// ApplyRatingTemplate copies a template into an existing task's active constraints.
+// replace=true supersedes all active rating rows (rating criteria always come from
+// templates) and only template-sourced operation rows, so goals/human operation
+// constraints survive a template switch; replace=false appends only clauses whose
+// (scope, text) is not already active. It also updates tasks.rating_template_id.
 func (d *DB) ApplyRatingTemplate(explorationID, templateID int64, replace bool) (int, error) {
 	clauses, err := loadTemplateClauseInputs(d, templateID)
 	if err != nil {
@@ -314,15 +340,19 @@ func (d *DB) ApplyRatingTemplate(explorationID, templateID int64, replace bool) 
 WHERE exploration_id=$1 AND scope='rating' AND status='active'`, explorationID); err != nil {
 			return 0, err
 		}
+		if _, err := tx.Exec(`UPDATE task_constraints SET status='superseded', updated_at=now()
+WHERE exploration_id=$1 AND scope='operation' AND status='active' AND origin LIKE 'template:%'`, explorationID); err != nil {
+			return 0, err
+		}
 	}
 	origin := fmt.Sprintf("template:%d", templateID)
 	added := 0
 	for _, c := range clauses {
-		text := ratingClauseText(c.Code, c.Text)
+		text := templateClauseText(c)
 		if !replace {
 			var exists bool
 			if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM task_constraints
-WHERE exploration_id=$1 AND scope='rating' AND status='active' AND text=$2)`, explorationID, text).Scan(&exists); err != nil {
+WHERE exploration_id=$1 AND scope=$2 AND status='active' AND text=$3)`, explorationID, c.Scope, text).Scan(&exists); err != nil {
 				return 0, err
 			}
 			if exists {
@@ -330,7 +360,7 @@ WHERE exploration_id=$1 AND scope='rating' AND status='active' AND text=$2)`, ex
 			}
 		}
 		if _, err := tx.Exec(`INSERT INTO task_constraints(exploration_id, kind, scope, text, origin)
-VALUES ($1,$2,'rating',$3,$4)`, explorationID, c.Kind, text, origin); err != nil {
+VALUES ($1,$2,$3,$4,$5)`, explorationID, c.Kind, c.Scope, text, origin); err != nil {
 			return 0, err
 		}
 		added++
@@ -351,7 +381,7 @@ func loadTemplateClauseInputs(d *DB, templateID int64) ([]RatingTemplateClauseIn
 	}
 	out := make([]RatingTemplateClauseInput, 0, len(t.Clauses))
 	for _, c := range t.Clauses {
-		out = append(out, RatingTemplateClauseInput{Code: c.Code, Kind: c.Kind, Text: c.Text, SortOrder: c.SortOrder})
+		out = append(out, RatingTemplateClauseInput{Code: c.Code, Kind: c.Kind, Scope: c.Scope, Text: c.Text, SortOrder: c.SortOrder})
 	}
 	return out, nil
 }
@@ -487,6 +517,90 @@ VALUES ($1,$2,$3,true) ON CONFLICT (nkey) DO NOTHING RETURNING id`, sd.nkey, sd.
 		if err := insertTemplateClausesTx(tx, id, sd.clauses); err != nil {
 			_ = tx.Rollback()
 			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return d.SetSetting(flag, "true")
+}
+
+// SeedRatingTemplateOperationClauses adds the built-in operation-constraint sets
+// to the three seeded assessment templates once per database. Templates are
+// matched by nkey and only receive operation clauses when they have none yet, so
+// user edits/deletions of built-ins are never undone and rating clauses are never
+// touched. SRC templates get the SSRF proof-only / no-mass-scan rule; the
+// red-team template only gets the basic no-destructive/no-DoS baseline.
+func (d *DB) SeedRatingTemplateOperationClauses() error {
+	const flag = "rating_templates_ops_seed_v1"
+	if v, ok, err := d.GetSetting(flag); err == nil && ok && v == "true" {
+		return nil
+	}
+	srcBaseline := []RatingTemplateClauseInput{
+		{Kind: "deny", Scope: "operation", Text: "SSRF 仅用于证明可达性：优先用一次回显/DNS/HTTP 带外验证，或只探测单个内网目标/端口；不得对内网段做端口/服务批量扫描、横向探测或进一步利用。"},
+		{Kind: "deny", Scope: "operation", Text: "不得对 task_scope 之外的域名/IP 发起扫描或利用。"},
+	}
+	seeds := []struct {
+		nkey    string
+		clauses []RatingTemplateClauseInput
+	}{
+		{
+			nkey: "internet-src",
+			clauses: append(append([]RatingTemplateClauseInput{}, srcBaseline...),
+				RatingTemplateClauseInput{Kind: "deny", Scope: "operation", Text: "禁止破坏性操作：不得删除或篡改业务数据、不得写入 webshell/后门、不得部署持久化；取得可复现证据即停止。"},
+			),
+		},
+		{
+			nkey: "bank-src",
+			clauses: append(append([]RatingTemplateClauseInput{}, srcBaseline...),
+				RatingTemplateClauseInput{Kind: "deny", Scope: "operation", Text: "禁止破坏性操作：不得删除、篡改或导出业务/资金数据，不得写入后门、提权后持久化；取得最小可复现证据即停止。"},
+				RatingTemplateClauseInput{Kind: "deny", Scope: "operation", Text: "敏感数据只取最小证明样本（如单条记录/截图），不得批量下载或保存真实客户数据。"},
+			),
+		},
+		{
+			nkey: "redteam",
+			clauses: []RatingTemplateClauseInput{
+				{Kind: "deny", Scope: "operation", Text: "禁止破坏性操作：不得删除或篡改生产业务数据、不得写入 webshell/后门、不得部署持久化；取得可复现证据即停止。"},
+				{Kind: "deny", Scope: "operation", Text: "不得影响业务可用性：禁止拒绝服务、资源耗尽、批量删除等可能造成业务中断的操作。"},
+			},
+		},
+	}
+	for _, sd := range seeds {
+		tx, err := d.Begin()
+		if err != nil {
+			return err
+		}
+		var id int64
+		err = tx.QueryRow(`SELECT id FROM rating_templates WHERE nkey=$1`, sd.nkey).Scan(&id)
+		if err == sql.ErrNoRows {
+			_ = tx.Rollback()
+			continue // 用户删除了该内置模板，不重建
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		var hasOps bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM rating_template_clauses
+WHERE template_id=$1 AND scope='operation')`, id).Scan(&hasOps); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if hasOps {
+			_ = tx.Rollback()
+			continue // 用户已自行维护操作约束，不覆盖
+		}
+		var base int
+		if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order)+1,0) FROM rating_template_clauses WHERE template_id=$1`, id).Scan(&base); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		for i, c := range sd.clauses {
+			c.SortOrder = base + i
+			if err := insertTemplateClausesTx(tx, id, []RatingTemplateClauseInput{c}); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return err

@@ -1225,9 +1225,7 @@ const TaskRow = React.memo(function TaskRow({
           const f = task.findings;
           const total = f ? f.critical + f.high + f.medium + f.low : 0;
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
-          const seg = (n: number, cls: string) => (
-            <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>
-          );
+          const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
             <span className="font-medium whitespace-nowrap" title="严重 / 高 / 中 / 低">
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
@@ -3298,7 +3296,7 @@ function CreateTaskSheet({
               />
             </div>
             <Field>
-              <FieldLabel htmlFor="rating-template">漏洞评级模板（可选）</FieldLabel>
+              <FieldLabel htmlFor="rating-template">测评模板（可选）</FieldLabel>
               <NativeSelect
                 id="rating-template"
                 value={ratingTemplateID != null ? String(ratingTemplateID) : ""}
@@ -3312,15 +3310,25 @@ function CreateTaskSheet({
                 ))}
               </NativeSelect>
               <FieldDescription>
-                选中后会把模板条款快照成任务的「定级口径」；之后修改模板不会影响已建任务，可在任务详情里继续编辑。
+                选中后会按条款 scope
+                把定级口径与操作约束快照进任务；之后修改模板不会影响已建任务，可在任务详情里继续编辑。
               </FieldDescription>
               {selectedRatingTemplate && (selectedRatingTemplate.clauses?.length ?? 0) > 0 && (
                 <div className="max-h-36 overflow-y-auto rounded-md border p-2 text-xs">
                   {(selectedRatingTemplate.clauses ?? []).slice(0, 10).map((c) => (
                     <div key={c.id} className="flex gap-1.5 py-0.5">
-                      <span className="shrink-0 font-medium">{c.code || (c.kind === "allow" ? "计入" : "不收取")}</span>
+                      <span className="shrink-0 font-medium">
+                        {c.code ||
+                          ((c.scope ?? "rating") === "operation"
+                            ? c.kind === "allow"
+                              ? "允许"
+                              : "禁止"
+                            : c.kind === "allow"
+                              ? "计入"
+                              : "忽略")}
+                      </span>
                       <span className="text-muted-foreground">
-                        {c.kind === "allow" ? "计入" : "不收取"} · {c.text}
+                        {(c.scope ?? "rating") === "operation" ? "操作" : "定级"} · {c.text}
                       </span>
                     </div>
                   ))}

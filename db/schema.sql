@@ -346,11 +346,18 @@ CREATE TABLE IF NOT EXISTS rating_template_clauses (
     template_id BIGINT NOT NULL REFERENCES rating_templates(id) ON DELETE CASCADE,
     code        TEXT NOT NULL DEFAULT '',
     kind        TEXT NOT NULL CHECK (kind IN ('allow','deny')),
+    -- scope 与 task_constraints 一致：rating=定级口径，operation=操作约束。
+    -- 测评模板可同时携带两类条款，应用时按 scope 分别快照。
+    scope       TEXT NOT NULL DEFAULT 'rating',
     text        TEXT NOT NULL,
     sort_order  INTEGER NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE rating_template_clauses ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'rating';
+ALTER TABLE rating_template_clauses DROP CONSTRAINT IF EXISTS rating_template_clauses_scope_check;
+ALTER TABLE rating_template_clauses ADD CONSTRAINT rating_template_clauses_scope_check
+    CHECK (scope IN ('operation','rating'));
 CREATE INDEX IF NOT EXISTS idx_rating_template_clauses
     ON rating_template_clauses(template_id, sort_order, id);
 DROP TRIGGER IF EXISTS trg_rating_templates_upd ON rating_templates;

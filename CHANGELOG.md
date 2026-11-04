@@ -14,6 +14,8 @@
 - **新增 `list_finding_quota` 工具**：按 `findings.asset_ids` 关联 service 资产，统计每个 host:port 已报的 critical/high/medium/low/total，用于判断单主机配额，避免 hint 里写死“已报 12 个”。
 - **漏洞评级模板**：新增全局「评级模板」页面与 `rating_templates` / `rating_template_clauses` 表，内置互联网 SRC / 银行 SRC / 攻防三套示例模板；新建任务和任务详情均可选择模板，模板条款会快照成 `task_constraints(scope='rating')`，之后修改模板不影响已建任务。
 - **评级依据可校验**：新增 `get_rating_criteria` 工具（worker/planner/mainagent），`constraintBlock` 的 rating 条款带上 `[#id]`；`report_finding` 新增 `rating_clause_id` / `rating_basis`，有生效 rating 条款时必须引用条款或说明未匹配依据，并把条款文本快照写入 `findings`，漏洞详情展示「评级依据」。
+- **测评模板：评级模板扩展为“测评模板”**：`rating_template_clauses` 新增 `scope`（operation / rating），一个模板可同时携带定级条款与操作约束。任务创建或任务详情应用模板时按 scope 分别快照到 `task_constraints`；之后修改模板不影响已建任务。内置互联网 SRC / 银行 SRC 追加“SSRF 仅证明可达性、不得批量扫描内网”“禁止破坏性操作”等操作约束，攻防模板只追加禁止破坏性操作/影响可用性的基础底线。应用模板的 replace 只替换 rating 行与模板来源的 operation 行，不会清掉 goals/人工补充的操作约束；`AddConstraint` 对相同 `(scope, kind, text)` 的 active 约束去重。
+- **测评模板编辑 UI**：模板条款可逐条选择定级/操作及允许/禁止；侧边栏、任务创建与任务详情文案统一为「测评模板」。
 
 ### 变更
 

@@ -236,6 +236,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if err := m.pg.SeedRatingTemplates(); err != nil {
 			log.Printf("[rating] seed 评级模板失败: %v", err)
 		}
+		if err := m.pg.SeedRatingTemplateOperationClauses(); err != nil {
+			log.Printf("[rating] seed 测评模板操作约束失败: %v", err)
+		}
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
 		if err := s.seedFindingRetester(); err != nil {
