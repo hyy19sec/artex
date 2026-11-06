@@ -47,6 +47,32 @@ function clauseKindLabel(scope: ConstraintScope, kind: ConstraintKind): string {
   return kind === "allow" ? "计入" : "忽略";
 }
 
+type TemplateFileRaw = {
+  name?: unknown;
+  description?: unknown;
+  clauses?: Array<{ code?: unknown; kind?: unknown; scope?: unknown; text?: unknown }>;
+};
+
+// 解析导出的模板 JSON（与 POST/PUT /api/rating-templates 的 body 同构）。
+function parseTemplateInput(raw: TemplateFileRaw): RatingTemplateInput {
+  const input: RatingTemplateInput = {
+    name: String(raw.name ?? "").trim(),
+    description: String(raw.description ?? "").trim(),
+    clauses: (Array.isArray(raw.clauses) ? raw.clauses : [])
+      .map((c, i) => ({
+        code: String(c.code ?? "").trim(),
+        kind: c.kind === "deny" ? ("deny" as const) : ("allow" as const),
+        scope: c.scope === "operation" ? ("operation" as const) : ("rating" as const),
+        text: String(c.text ?? "").trim(),
+        sort_order: i,
+      }))
+      .filter((c) => c.text !== ""),
+  };
+  if (!input.name) throw new Error("文件缺少 name");
+  if (input.clauses.length === 0) throw new Error("文件没有有效条款");
+  return input;
+}
+
 export default function RatingTemplatesPage() {
   const [templates, setTemplates] = React.useState<RatingTemplate[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -57,7 +83,10 @@ export default function RatingTemplatesPage() {
   const [clauses, setClauses] = React.useState<ClauseDraft[]>([emptyClause()]);
   const [saving, setSaving] = React.useState(false);
   const [applyingTemplateID, setApplyingTemplateID] = React.useState<number | null>(null);
+  const [replacingTemplateID, setReplacingTemplateID] = React.useState<number | null>(null);
+  const [replaceTarget, setReplaceTarget] = React.useState<RatingTemplate | null>(null);
   const importInputRef = React.useRef<HTMLInputElement>(null);
+  const replaceInputRef = React.useRef<HTMLInputElement>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -124,26 +153,7 @@ export default function RatingTemplatesPage() {
 
   async function importTemplate(file: File) {
     try {
-      const raw = JSON.parse(await file.text()) as {
-        name?: unknown;
-        description?: unknown;
-        clauses?: Array<{ code?: unknown; kind?: unknown; scope?: unknown; text?: unknown }>;
-      };
-      const input: RatingTemplateInput = {
-        name: String(raw.name ?? "").trim(),
-        description: String(raw.description ?? "").trim(),
-        clauses: (Array.isArray(raw.clauses) ? raw.clauses : [])
-          .map((c, i) => ({
-            code: String(c.code ?? "").trim(),
-            kind: c.kind === "deny" ? ("deny" as const) : ("allow" as const),
-            scope: c.scope === "operation" ? ("operation" as const) : ("rating" as const),
-            text: String(c.text ?? "").trim(),
-            sort_order: i,
-          }))
-          .filter((c) => c.text !== ""),
-      };
-      if (!input.name) throw new Error("文件缺少 name");
-      if (input.clauses.length === 0) throw new Error("文件没有有效条款");
+      const input = parseTemplateInput(JSON.parse(await file.text()));
       await api.createRatingTemplate(input);
       toast.success(`已导入模板「${input.name}」`);
       await load();
@@ -151,6 +161,32 @@ export default function RatingTemplatesPage() {
       toast.error("导入失败：" + (e as Error).message);
     } finally {
       if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }
+
+  // 用导出的 JSON 覆盖当前模板：保留模板 id 与任务引用，只替换名称/说明/条款。
+  async function replaceFromJson(file: File) {
+    const target = replaceTarget;
+    if (!target) return;
+    setReplacingTemplateID(target.id);
+    try {
+      const input = parseTemplateInput(JSON.parse(await file.text()));
+      if (
+        !window.confirm(
+          `用 JSON 内容覆盖模板「${target.name}」？\n将替换名称、说明和全部条款；模板 id 与引用它的任务不变，任务快照需再点「批量应用」同步。`,
+        )
+      ) {
+        return;
+      }
+      await api.updateRatingTemplate(target.id, input);
+      toast.success(`已用 JSON 覆盖模板「${input.name}」（${input.clauses.length} 条条款）`);
+      await load();
+    } catch (e) {
+      toast.error("替换失败：" + (e as Error).message);
+    } finally {
+      setReplacingTemplateID(null);
+      setReplaceTarget(null);
+      if (replaceInputRef.current) replaceInputRef.current.value = "";
     }
   }
 
@@ -263,6 +299,16 @@ export default function RatingTemplatesPage() {
               if (file) void importTemplate(file);
             }}
           />
+          <input
+            ref={replaceInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void replaceFromJson(file);
+            }}
+          />
           <Button size="sm" variant="outline" onClick={() => importInputRef.current?.click()}>
             <UploadIcon /> 导入模板
           </Button>
@@ -321,6 +367,18 @@ export default function RatingTemplatesPage() {
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => exportTemplate(t)}>
                   <DownloadIcon /> 导出
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={replacingTemplateID === t.id}
+                  onClick={() => {
+                    setReplaceTarget(t);
+                    replaceInputRef.current?.click();
+                  }}
+                  title="用导出的 JSON 覆盖当前模板（保留模板 id 与任务引用）"
+                >
+                  <UploadIcon /> {replacingTemplateID === t.id ? "替换中…" : "从 JSON 替换"}
                 </Button>
                 <Button
                   size="sm"
