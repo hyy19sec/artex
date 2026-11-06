@@ -3345,6 +3345,7 @@ export const settings: Settings = {
 export const taskSchedule: TaskSchedule = {
   enabled: false,
   task_id: 0,
+  resume_manual_paused: false,
   timezone: "Asia/Shanghai",
   weekday: [
     { start: "12:00", end: "14:00" },

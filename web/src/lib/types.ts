@@ -500,6 +500,23 @@ export interface RatingTemplateInput {
   clauses: Array<{ code: string; kind: ConstraintKind; scope?: ConstraintScope; text: string; sort_order?: number }>;
 }
 
+export interface RatingTemplateApplyItem {
+  task_id: string;
+  name: string;
+  added: number;
+  status: string;
+  paused: boolean;
+  error?: string;
+}
+
+export interface RatingTemplateApplyResult {
+  ok: boolean;
+  total: number;
+  applied: number;
+  failed: number;
+  results: RatingTemplateApplyItem[];
+}
+
 export interface RatingCriteria {
   template?: RatingTemplate;
   clauses: TaskConstraint[];
@@ -1006,6 +1023,9 @@ export interface TaskSchedule {
   enabled: boolean;
   // 只让定时窗口管理指定任务；0 / 省略 = 全部任务（兼容旧配置）。
   task_id?: number;
+  // true = 进入允许时段时连手动暂停的任务也恢复；
+  // 默认 false，只恢复定时窗口自己暂停的任务。
+  resume_manual_paused?: boolean;
   timezone?: string;
   weekday: TaskScheduleRange[];
   weekend: TaskScheduleRange[];

@@ -251,3 +251,48 @@ func TestScheduledPauseOnlySelectedTask(t *testing.T) {
 		t.Fatalf("previous target was not released: %+v", lc)
 	}
 }
+
+func TestScheduleShouldResumePaused(t *testing.T) {
+	cases := []struct {
+		name string
+		sch  TaskSchedule
+		lc   taskLifecycleState
+		want bool
+	}{
+		{
+			name: "scheduled pause resumes by default",
+			lc:   taskLifecycleState{Paused: true, ScheduledPause: true, Status: "running"},
+			want: true,
+		},
+		{
+			name: "manual pause skipped by default",
+			lc:   taskLifecycleState{Paused: true, ScheduledPause: false, Status: "running"},
+			want: false,
+		},
+		{
+			name: "manual pause resumes when enabled",
+			sch:  TaskSchedule{ResumeManualPaused: true},
+			lc:   taskLifecycleState{Paused: true, ScheduledPause: false, Status: "running"},
+			want: true,
+		},
+		{
+			name: "not paused",
+			sch:  TaskSchedule{ResumeManualPaused: true},
+			lc:   taskLifecycleState{Paused: false, Status: "running"},
+			want: false,
+		},
+		{
+			name: "terminal task never resumes",
+			sch:  TaskSchedule{ResumeManualPaused: true},
+			lc:   taskLifecycleState{Paused: true, ScheduledPause: true, Status: "done"},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.sch.shouldResumePaused(tc.lc); got != tc.want {
+				t.Fatalf("shouldResumePaused()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}

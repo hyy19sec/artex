@@ -1430,6 +1430,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (index >= 0) mockRatingTemplates.splice(index, 1);
     return { deleted: true };
   }
+  if (seg[0] === "rating-templates" && seg[2] === "apply-to-tasks" && m === "POST") {
+    return { ok: true, total: 0, applied: 0, failed: 0, results: [] };
+  }
   if (seg[0] === "tasks" && seg[2] === "rating-criteria" && m === "GET") {
     return { template: mockRatingTemplates[0], clauses: [] };
   }

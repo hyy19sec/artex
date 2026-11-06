@@ -126,6 +126,8 @@ export default function SystemSettingsPage() {
   const [scheduleStatus, setScheduleStatus] = React.useState<TaskSchedule | null>(null);
   // 定时窗口的生效任务："0" = 全部任务（兼容旧配置），否则为任务 id。
   const [scheduleTaskID, setScheduleTaskID] = React.useState("0");
+  // 进入时段时是否连手动暂停的任务一起恢复；默认只恢复定时暂停。
+  const [scheduleResumeManualPaused, setScheduleResumeManualPaused] = React.useState(false);
   const [scheduleTasks, setScheduleTasks] = React.useState<Task[]>([]);
   const [savingSchedule, setSavingSchedule] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
@@ -153,6 +155,7 @@ export default function SystemSettingsPage() {
     setWeekdayRanges(s.weekday ?? []);
     setWeekendRanges(s.weekend ?? []);
     setScheduleTaskID(String(s.task_id && s.task_id > 0 ? s.task_id : 0));
+    setScheduleResumeManualPaused(!!s.resume_manual_paused);
     setScheduleStatus(s);
   }, []);
 
@@ -205,6 +208,7 @@ export default function SystemSettingsPage() {
       .setTaskSchedule({
         enabled: scheduleEnabled,
         task_id: Number(scheduleTaskID) || 0,
+        resume_manual_paused: scheduleResumeManualPaused,
         timezone: scheduleStatus?.timezone || "Asia/Shanghai",
         weekday: weekdayRanges,
         weekend: weekendRanges,
@@ -614,8 +618,8 @@ export default function SystemSettingsPage() {
               记录代理，独立于流量捕获。
               <br />
               来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）、{" "}
-              <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。总开关关闭时，各
-              Agent 的网络搜索开关不可用。
+              <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。总开关关闭时，各 Agent
+              的网络搜索开关不可用。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -827,8 +831,8 @@ export default function SystemSettingsPage() {
             <CardDescription>
               每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。
               <br />
-              <b>workers 生效方式</b>：只对之后启动的任务生效；正在运行的任务保持原 worker 数。
-              暂停/恢复不会重建 worker 循环——要让当前任务生效，需重启后端（或新建任务）。
+              <b>workers 生效方式</b>：只对之后启动的任务生效；正在运行的任务保持原 worker 数。 暂停/恢复不会重建 worker
+              循环——要让当前任务生效，需重启后端（或新建任务）。
               <br />
               <b>Frontier 上限</b>：保存后立即生效，只拦截新的 add_intent；不会删除已有 open 意图，也不会主动唤醒
               planner。当前 open 高于上限时，下一次新增会被拒绝，直到存量降到上限以下。
@@ -866,8 +870,8 @@ export default function SystemSettingsPage() {
                 </Button>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                保存后立即生效：下一次 add_intent 即按新上限拦截；不会删除已有 open 意图，也不会主动触发
-                planner。当前 open 高于上限时，新增会被拒绝，需先执行、合并或关闭已有意图。
+                保存后立即生效：下一次 add_intent 即按新上限拦截；不会删除已有 open 意图，也不会主动触发 planner。当前
+                open 高于上限时，新增会被拒绝，需先执行、合并或关闭已有意图。
               </p>
             </div>
           </CardContent>
@@ -888,7 +892,7 @@ export default function SystemSettingsPage() {
               年国务院节假日安排），法定节假日全天使用“非工作日”时段（低价时段）；调休上班的周末也按非工作日处理，与
               DeepSeek「周一至周五为高峰」的口径一致。
               <br />
-              <b>只恢复定时暂停的任务</b>：手动暂停的任务不会被自动恢复；时段不支持跨午夜，需要跨午夜请拆成两段。
+              <b>恢复范围</b>：默认仅恢复定时暂停；可选「包含手动暂停」。时段不支持跨午夜。
               <br />
               定时窗口生效期间，手动恢复会在下一次检查（30 秒内）被再次暂停；如需长期放行，请先关闭定时测试。
             </CardDescription>
@@ -921,6 +925,22 @@ export default function SystemSettingsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label className="font-normal text-muted-foreground text-sm">进入时段时恢复</Label>
+              <Select
+                value={scheduleResumeManualPaused ? "all" : "scheduled"}
+                onValueChange={(v) => setScheduleResumeManualPaused(v === "all")}
+                disabled={!loaded || savingSchedule}
+              >
+                <SelectTrigger className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="scheduled">仅定时暂停的任务</SelectItem>
+                  <SelectItem value="all">包含手动暂停的任务</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <ScheduleRangeEditor
               label="工作日 / 高峰日（周一至周五，不含法定节假日）"
               ranges={weekdayRanges}
@@ -947,6 +967,10 @@ export default function SystemSettingsPage() {
                     ? scheduleTasks.find((task) => task.id === String(scheduleStatus.task_id))?.name?.trim() ||
                       `任务 #${scheduleStatus.task_id}`
                     : "全部任务"}
+                </div>
+                <div>
+                  恢复范围：
+                  {scheduleStatus.resume_manual_paused ? "定时暂停 + 手动暂停" : "仅定时暂停"}
                 </div>
                 {scheduleStatus.next_change ? (
                   <div>

@@ -752,6 +752,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/rating-templates", s.createRatingTemplate)
 	mux.HandleFunc("PUT /api/rating-templates/{id}", s.updateRatingTemplate)
 	mux.HandleFunc("DELETE /api/rating-templates/{id}", s.deleteRatingTemplate)
+	mux.HandleFunc("POST /api/rating-templates/{id}/apply-to-tasks", s.applyRatingTemplateToTasks)
 	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)

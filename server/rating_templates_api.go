@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -76,6 +77,103 @@ func (s *Server) deleteRatingTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"deleted": true})
+}
+
+// applyRatingTemplateToTasks applies a template to every task currently using it.
+// mode=replace (default) supersedes the task's rating rows and template-sourced
+// operation rows, then inserts the template's current clauses; human/goals
+// operation constraints survive. mode=append only adds missing clauses.
+func (s *Server) applyRatingTemplateToTasks(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, 400, "bad rating template id")
+		return
+	}
+	if _, err := s.m.PG().GetRatingTemplate(id); err != nil {
+		if errors.Is(err, db.ErrRatingTemplateNotFound) {
+			writeErr(w, 404, "测评模板不存在")
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	replace := true
+	switch body.Mode {
+	case "", "replace":
+	case "append":
+		replace = false
+	default:
+		writeErr(w, 400, "mode 必须是 replace 或 append")
+		return
+	}
+
+	rows, err := s.m.PG().Query(`
+SELECT t.id, COALESCE(t.name,''), t.exploration_id, COALESCE(t.status,''), t.paused
+FROM tasks t
+WHERE t.rating_template_id=$1 AND t.deleted_at IS NULL
+ORDER BY t.id`, id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type item struct {
+		TaskID string `json:"task_id"`
+		Name   string `json:"name"`
+		Added  int    `json:"added"`
+		Status string `json:"status"`
+		Paused bool   `json:"paused"`
+		Error  string `json:"error,omitempty"`
+	}
+	results := []item{}
+	applied, failed := 0, 0
+	for rows.Next() {
+		var taskID, explorationID int64
+		var name, status string
+		var paused bool
+		if err := rows.Scan(&taskID, &name, &explorationID, &status, &paused); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		ts := strconv.FormatInt(taskID, 10)
+		it := item{TaskID: ts, Name: name, Status: status, Paused: paused}
+		if s.engine.IsDeleting(ts) || !s.engine.beginTaskOperation(ts) {
+			it.Error = "任务正在删除，已跳过"
+			failed++
+			results = append(results, it)
+			continue
+		}
+		added, applyErr := s.m.PG().ApplyRatingTemplate(explorationID, id, replace)
+		s.engine.decInflight(ts)
+		if applyErr != nil {
+			it.Error = applyErr.Error()
+			failed++
+		} else {
+			it.Added = added
+			applied++
+		}
+		results = append(results, it)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok":      failed == 0,
+		"total":   len(results),
+		"applied": applied,
+		"failed":  failed,
+		"results": results,
+	})
 }
 
 // taskRatingCriteria returns the task's selected template + active rating clauses.

@@ -7,6 +7,7 @@ import {
   ArrowUpIcon,
   DownloadIcon,
   PencilIcon,
+  PlayIcon,
   PlusIcon,
   ScaleIcon,
   Trash2Icon,
@@ -55,6 +56,7 @@ export default function RatingTemplatesPage() {
   const [description, setDescription] = React.useState("");
   const [clauses, setClauses] = React.useState<ClauseDraft[]>([emptyClause()]);
   const [saving, setSaving] = React.useState(false);
+  const [applyingTemplateID, setApplyingTemplateID] = React.useState<number | null>(null);
   const importInputRef = React.useRef<HTMLInputElement>(null);
 
   const load = React.useCallback(async () => {
@@ -212,6 +214,32 @@ export default function RatingTemplatesPage() {
     }
   }
 
+  async function applyToTasks(t: RatingTemplate) {
+    if (
+      !window.confirm(
+        `将模板「${t.name}」应用到所有使用它的任务？\n会替换任务的定级条款与模板来源的操作约束；人工/goals 约束保留。`,
+      )
+    ) {
+      return;
+    }
+    setApplyingTemplateID(t.id);
+    try {
+      const r = await api.applyRatingTemplateToTasks(t.id, "replace");
+      if (r.total === 0) {
+        toast.success("没有任务使用该模板");
+      } else if (r.failed > 0) {
+        const first = r.results.find((x) => x.error)?.error;
+        toast.error(`已应用 ${r.applied} 个任务，失败 ${r.failed} 个${first ? `：${first}` : ""}`);
+      } else {
+        toast.success(`已应用到 ${r.applied} 个任务`);
+      }
+    } catch (e) {
+      toast.error("批量应用失败：" + (e as Error).message);
+    } finally {
+      setApplyingTemplateID(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -293,6 +321,15 @@ export default function RatingTemplatesPage() {
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => exportTemplate(t)}>
                   <DownloadIcon /> 导出
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={applyingTemplateID === t.id}
+                  onClick={() => void applyToTasks(t)}
+                  title="应用到所有使用该模板的任务"
+                >
+                  <PlayIcon /> {applyingTemplateID === t.id ? "应用中…" : "批量应用"}
                 </Button>
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void remove(t)}>
                   <Trash2Icon /> 删除

@@ -35,10 +35,13 @@ type TaskSchedule struct {
 	Enabled bool `json:"enabled"`
 	// TaskID 限定定时窗口只作用于该任务；0 = 全部任务（兼容旧配置）。
 	// 切换目标后，旧任务若带 scheduled_pause 标记会自动恢复。
-	TaskID   int64           `json:"task_id,omitempty"`
-	Timezone string          `json:"timezone,omitempty"`
-	Weekday  []ScheduleRange `json:"weekday"` // 周一至周五
-	Weekend  []ScheduleRange `json:"weekend"` // 周六、周日
+	TaskID int64 `json:"task_id,omitempty"`
+	// ResumeManualPaused 为 true 时，进入允许时段会连手动暂停的任务一起恢复；
+	// 默认 false，只恢复定时窗口自己暂停的任务（ScheduledPause=true）。
+	ResumeManualPaused bool            `json:"resume_manual_paused,omitempty"`
+	Timezone           string          `json:"timezone,omitempty"`
+	Weekday            []ScheduleRange `json:"weekday"` // 周一至周五
+	Weekend            []ScheduleRange `json:"weekend"` // 周六、周日
 
 	loc *time.Location `json:"-"`
 }
@@ -166,6 +169,16 @@ func (sch TaskSchedule) managesTask(id string) bool {
 	}
 	n, err := strconv.ParseInt(id, 10, 64)
 	return err == nil && n == sch.TaskID
+}
+
+// shouldResumePaused reports whether a paused task should be resumed when the
+// window opens. Default: only tasks the schedule itself paused. When
+// ResumeManualPaused is set, manually paused tasks are resumed too.
+func (sch TaskSchedule) shouldResumePaused(lc taskLifecycleState) bool {
+	if !lc.Paused || isTerminalStatus(lc.Status) {
+		return false
+	}
+	return sch.ResumeManualPaused || lc.ScheduledPause
 }
 
 func (sch TaskSchedule) location() *time.Location {
@@ -448,7 +461,7 @@ func (s *Server) resumeScheduledTasks(reason string, scope TaskSchedule) {
 			continue
 		}
 		lc := t.lifecycleSnapshot()
-		if !lc.Paused || !lc.ScheduledPause || isTerminalStatus(lc.Status) || s.engine.IsDeleting(t.ID) {
+		if !scope.shouldResumePaused(lc) || s.engine.IsDeleting(t.ID) {
 			continue
 		}
 		if _, err := s.admitPausedTask(t); err != nil {

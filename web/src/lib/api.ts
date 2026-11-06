@@ -73,6 +73,7 @@ import type {
   PromptVersion,
   RatingCriteria,
   RatingTemplate,
+  RatingTemplateApplyResult,
   RatingTemplateInput,
   SessionTokenUsage,
   Settings,
@@ -302,6 +303,8 @@ export const api = {
   updateRatingTemplate: (id: number, input: RatingTemplateInput) =>
     put<RatingTemplate>(`/rating-templates/${id}`, input),
   deleteRatingTemplate: (id: number) => del<{ deleted: boolean }>(`/rating-templates/${id}`),
+  applyRatingTemplateToTasks: (id: number, mode: "replace" | "append" = "replace") =>
+    post<RatingTemplateApplyResult>(`/rating-templates/${id}/apply-to-tasks`, { mode }),
   taskRatingCriteria: (id: string) => get<RatingCriteria>(`/tasks/${id}/rating-criteria`),
   applyRatingTemplate: (id: string, templateId: number, mode: "replace" | "append" = "replace") =>
     post<{ ok: boolean; added: number }>(`/tasks/${id}/rating-template`, { template_id: templateId, mode }),
